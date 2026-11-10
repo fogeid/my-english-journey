@@ -1,0 +1,70 @@
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+# Dependências e build
+node_modules
+dist
+dist-ssr
+*.tsbuildinfo
+coverage/
+
+# Testes de navegador (relatórios/capturas podem conter dados)
+playwright-report/
+test-results/
+blob-report/
+
+# Arquivos temporários
+*.tmp
+*.temp
+.cache/
+Thumbs.db
+
+# Editor directories and files
+.vscode/*
+!.vscode/extensions.json
+.idea
+.DS_Store
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# Environment e credenciais (nunca versionar valores reais)
+.env
+.env.*
+!.env.example
+*.local
+.npmrc
+.netrc
+*.pem
+*.key
+*.p12
+*.pfx
+credentials*.json
+secrets*.json
+.dev.vars
+.wrangler/
+
+# Supabase CLI (estado local, links de projeto e snippets do Studio)
+supabase/.branches
+supabase/.temp
+supabase/.env
+supabase/snippets/
+
+# Backups e dumps de banco (contêm dados pessoais e hashes de senha).
+# Todo .sql é ignorado, EXCETO as migrações versionáveis.
+backups/
+*.sql
+*.sql.gz
+*.dump
+*.backup
+*.bak
+!supabase/migrations/
+!supabase/migrations/*.sql
