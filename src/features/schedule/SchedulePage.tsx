@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
-import { CalendarPlus, Sparkles } from 'lucide-react'
+import { CalendarPlus, Sparkles, Wand2 } from 'lucide-react'
 import { ErrorState } from '../../components/ui/ErrorState'
 import { LoadingState } from '../../components/ui/LoadingState'
 import { PageHeader } from '../../components/ui/PageHeader'
@@ -10,8 +10,17 @@ import { ActivityForm } from './ActivityForm'
 import { CompleteActivityDialog } from './CompleteActivityDialog'
 import { ConfirmDeleteDialog } from './ConfirmDeleteDialog'
 import { DayColumn } from './DayColumn'
+import { GeneratorDialog } from './GeneratorDialog'
 import { useScheduleService } from './schedule-context'
-import { activitiesOfDay, weekProgressPercent, type Activity, type ActivityValues, type WeekData } from './schedule-model'
+import {
+  activitiesOfDay,
+  weekProgressPercent,
+  type Activity,
+  type ActivityValues,
+  type Step,
+  type StepValues,
+  type WeekData,
+} from './schedule-model'
 import { useWeeklySchedule } from './useWeeklySchedule'
 import { WeekNavigation } from './WeekNavigation'
 import { addDays, civilDateInZone, currentWeekStart, weekDays, weekStartOf, type IsoDate } from './week'
@@ -21,6 +30,8 @@ type Dialog =
   | { kind: 'edit'; activity: Activity }
   | { kind: 'complete'; activity: Activity }
   | { kind: 'delete'; activity: Activity }
+  | { kind: 'lastStep'; activity: Activity; step: Step }
+  | { kind: 'generate' }
   | null
 
 function parseWeekParam(value: string | null): IsoDate | null {
@@ -69,15 +80,18 @@ export function SchedulePage() {
 
   const { state, busy, actionError, notice, run, reload, clearActionError } = useWeeklySchedule(weekStart)
   const [dialog, setDialog] = useState<Dialog>(null)
+  const [generatedMsg, setGeneratedMsg] = useState<string | null>(null)
 
   const goTo = (week: IsoDate) => {
     setDialog(null)
+    setGeneratedMsg(null)
     clearActionError()
     setParams(week === thisWeek ? {} : { week })
   }
 
   const openDialog = (d: Dialog) => {
     clearActionError()
+    setGeneratedMsg(null)
     setDialog(d)
   }
   const closeDialog = () => {
@@ -89,13 +103,27 @@ export function SchedulePage() {
   const countByDay: Record<IsoDate, number> = {}
   for (const a of data?.activities ?? []) countByDay[a.study_day] = (countByDay[a.study_day] ?? 0) + 1
 
-  const submitActivity = async (values: ActivityValues) => {
-    if (!plan || !user || !dialog) return
-    const ok =
-      dialog.kind === 'edit'
-        ? await run(() => service.updateActivity(dialog.activity.id, values), 'Atividade atualizada.')
-        : await run(() => service.createActivity(user.id, plan.id, values), 'Atividade criada.')
+  // Criação/edição da atividade e das etapas numa única operação (RPC atômica).
+  const submitActivity = async (values: ActivityValues, steps: StepValues[]) => {
+    if (!plan || !user || !dialog || (dialog.kind !== 'edit' && dialog.kind !== 'create')) return
+    const editing = dialog.kind === 'edit'
+    const ok = await run(
+      () => service.saveActivity({ activityId: editing ? dialog.activity.id : null, planId: plan.id, values, steps }),
+      editing ? 'Atividade atualizada.' : 'Atividade criada.',
+    )
     if (ok) setDialog(null)
+  }
+
+  // Marcar a ÚLTIMA etapa pendente conclui a atividade: pede antes os minutos reais (regra da ET-002).
+  const toggleStep = (activity: Activity, step: Step, completed: boolean) => {
+    const steps = data?.steps[activity.id] ?? []
+    const othersDone = steps.filter((st) => st.id !== step.id).every((st) => st.is_completed)
+    const parentDone = !!data?.sessions[activity.id]?.is_completed
+    if (completed && othersDone && !parentDone) {
+      openDialog({ kind: 'lastStep', activity, step })
+      return
+    }
+    void run(() => service.setStepCompleted(step.id, completed), completed ? 'Etapa concluída.' : 'Etapa reaberta.')
   }
 
   const move = (activity: Activity, direction: -1 | 1) => {
@@ -113,6 +141,13 @@ export function SchedulePage() {
     <section>
       <PageHeader title="Cronograma" description="Planeje a semana e registre o que foi estudado." />
 
+      <div className="mb-4">
+        <button type="button" className={btn.secondary} onClick={() => openDialog({ kind: 'generate' })} disabled={busy}>
+          <Wand2 className="size-4" aria-hidden="true" />
+          Gerar cronograma semanal
+        </button>
+      </div>
+
       <WeekNavigation
         weekStart={weekStart}
         isCurrentWeek={isCurrentWeek}
@@ -123,8 +158,8 @@ export function SchedulePage() {
 
       {/* Região de status persistente: anuncia o sucesso somente após confirmação do servidor. */}
       <div role="status" aria-live="polite">
-        {notice && !busy && !dialog && (
-          <p className="mb-4 rounded-md bg-emerald-50 px-3 py-2 text-sm text-emerald-800">{notice}</p>
+        {(notice ?? generatedMsg) && !busy && !dialog && (
+          <p className="mb-4 rounded-md bg-emerald-50 px-3 py-2 text-sm text-emerald-800">{notice ?? generatedMsg}</p>
         )}
       </div>
       {actionError && !dialog && (
@@ -193,6 +228,8 @@ export function SchedulePage() {
                 onComplete={(activity) => openDialog({ kind: 'complete', activity })}
                 onReopen={(activity) => void run(() => service.reopenActivity(activity.id), 'Atividade reaberta.')}
                 onDelete={(activity) => openDialog({ kind: 'delete', activity })}
+                steps={data.steps}
+                onToggleStep={toggleStep}
               />
             ))}
           </div>
@@ -203,11 +240,12 @@ export function SchedulePage() {
         <ActivityForm
           weekStart={weekStart}
           activity={dialog.kind === 'edit' ? dialog.activity : undefined}
+          steps={dialog.kind === 'edit' ? (data?.steps[dialog.activity.id] ?? []) : []}
           defaultDay={dialog.kind === 'create' ? dialog.day : dialog.activity.study_day}
           countByDay={countByDay}
           busy={busy}
           serverError={actionError}
-          onSubmit={(values) => void submitActivity(values)}
+          onSubmit={(values, steps) => void submitActivity(values, steps)}
           onClose={closeDialog}
         />
       )}
@@ -221,6 +259,35 @@ export function SchedulePage() {
             if (ok) setDialog(null)
           }}
           onClose={closeDialog}
+        />
+      )}
+      {dialog?.kind === 'lastStep' && (
+        <CompleteActivityDialog
+          activity={dialog.activity}
+          heading="Concluir última etapa"
+          note={`“${dialog.step.title}” é a última etapa de “${dialog.activity.title}”. Ao confirmar, a atividade é concluída com os minutos reais informados (previsto: ${dialog.activity.planned_minutes} min).`}
+          busy={busy}
+          serverError={actionError}
+          onConfirm={async (minutes) => {
+            const ok = await run(() => service.setStepCompleted(dialog.step.id, true, minutes), 'Atividade concluída.')
+            if (ok) setDialog(null)
+          }}
+          onClose={closeDialog}
+        />
+      )}
+      {dialog?.kind === 'generate' && (
+        <GeneratorDialog
+          defaultStart={today}
+          onClose={() => setDialog(null)}
+          onGenerated={({ created, skipped, startDate }) => {
+            const target = weekStartOf(startDate)
+            setDialog(null)
+            if (target !== weekStart) setParams(target === thisWeek ? {} : { week: target })
+            else reload()
+            setGeneratedMsg(
+              `Cronograma gerado: ${created} ${created === 1 ? 'atividade criada' : 'atividades criadas'}${skipped ? `, ${skipped} já ${skipped === 1 ? 'existia' : 'existiam'} (não duplicada${skipped === 1 ? '' : 's'})` : ''}.`,
+            )
+          }}
         />
       )}
       {dialog?.kind === 'delete' && (

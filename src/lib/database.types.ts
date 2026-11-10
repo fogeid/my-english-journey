@@ -221,14 +221,14 @@ isOneToOne: false
                   ]
                 },"study_activities": {
                   Row: {
-                    "created_at": string,"description": string | null,"id": string,"plan_id": string,"planned_minutes": number,"position": number,"skill": string,"study_day": string,"title": string,"user_id": string
+                    "created_at": string,"description": string | null,"generator_key": string | null,"id": string,"plan_id": string,"planned_minutes": number,"position": number,"skill": string,"study_day": string,"title": string,"user_id": string
                   }
                   ComputedFields: never
                   Insert: {
-                    "created_at"?: string,"description"?: string | null,"id"?: string,"plan_id": string,"planned_minutes": number,"position"?: number,"skill": string,"study_day": string,"title": string,"user_id": string
+                    "created_at"?: string,"description"?: string | null,"generator_key"?: string | null,"id"?: string,"plan_id": string,"planned_minutes": number,"position"?: number,"skill": string,"study_day": string,"title": string,"user_id": string
                   }
                   Update: {
-                    "created_at"?: string,"description"?: string | null,"id"?: string,"plan_id"?: string,"planned_minutes"?: number,"position"?: number,"skill"?: string,"study_day"?: string,"title"?: string,"user_id"?: string
+                    "created_at"?: string,"description"?: string | null,"generator_key"?: string | null,"id"?: string,"plan_id"?: string,"planned_minutes"?: number,"position"?: number,"skill"?: string,"study_day"?: string,"title"?: string,"user_id"?: string
                   }
                   Relationships: [
                     {
@@ -297,6 +297,32 @@ isOneToOne: false
       referencedColumns: ["id"]
     },{
       foreignKeyName: "study_sessions_user_id_fkey"
+      columns: ["user_id"]
+isOneToOne: false
+      referencedRelation: "profiles"
+      referencedColumns: ["user_id"]
+    }
+                  ]
+                },"study_subactivities": {
+                  Row: {
+                    "activity_id": string,"completed_at": string | null,"created_at": string,"description": string | null,"id": string,"is_completed": boolean,"planned_minutes": number,"position": number,"title": string,"user_id": string
+                  }
+                  ComputedFields: never
+                  Insert: {
+                    "activity_id": string,"completed_at"?: string | null,"created_at"?: string,"description"?: string | null,"id"?: string,"is_completed"?: boolean,"planned_minutes": number,"position": number,"title": string,"user_id": string
+                  }
+                  Update: {
+                    "activity_id"?: string,"completed_at"?: string | null,"created_at"?: string,"description"?: string | null,"id"?: string,"is_completed"?: boolean,"planned_minutes"?: number,"position"?: number,"title"?: string,"user_id"?: string
+                  }
+                  Relationships: [
+                    {
+      foreignKeyName: "study_subactivities_owner_activity_fk"
+      columns: ["user_id","activity_id"]
+isOneToOne: false
+      referencedRelation: "study_activities"
+      referencedColumns: ["user_id","id"]
+    },{
+      foreignKeyName: "study_subactivities_user_id_fkey"
       columns: ["user_id"]
 isOneToOne: false
       referencedRelation: "profiles"
@@ -406,6 +432,9 @@ isOneToOne: false
         isOneToOne: true
         isSetofReturn: false
       } },
+"generate_schedule":
+{ Args: { "p_items": Json }; Returns: Json
+                           },
 "get_review_queue":
 { Args: { "p_limit"?: number }; Returns: {
               "created_at": string,
@@ -484,7 +513,33 @@ isOneToOne: false
         to: "vocabulary_reviews"
         isOneToOne: true
         isSetofReturn: false
-      } }
+      } },
+"save_activity":
+{ Args: { "p_activity_id": string,"p_description": string,"p_plan_id": string,"p_planned_minutes": number,"p_skill": string,"p_steps"?: Json,"p_study_day": string,"p_title": string }; Returns: {
+              "created_at": string,
+"description": string | null,
+"generator_key": string | null,
+"id": string,
+"plan_id": string,
+"planned_minutes": number,
+"position": number,
+"skill": string,
+"study_day": string,
+"title": string,
+"user_id": string
+            }
+                          SetofOptions: {
+        from: "*"
+        to: "study_activities"
+        isOneToOne: true
+        isSetofReturn: false
+      } },
+"schedule_write_steps":
+{ Args: { "p_activity_id": string,"p_steps": Json }; Returns: number
+                           },
+"set_subactivity_completed":
+{ Args: { "p_actual_minutes"?: number,"p_completed": boolean,"p_subactivity_id": string }; Returns: Json
+                           }
           }
           Enums: {
             [_ in never]: never

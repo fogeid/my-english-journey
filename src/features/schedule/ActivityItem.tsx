@@ -1,7 +1,7 @@
-import { useId } from 'react'
-import { ArrowDown, ArrowUp, CheckCircle2, Circle, Pencil, RotateCcw, Trash2 } from 'lucide-react'
+import { useId, useState } from 'react'
+import { ArrowDown, ArrowUp, CheckCircle2, ChevronDown, ChevronRight, Circle, Pencil, RotateCcw, Trash2 } from 'lucide-react'
 import { btn } from '../../components/ui/styles'
-import { CATEGORY_LABELS, type Activity, type Session } from './schedule-model'
+import { CATEGORY_LABELS, sortSteps, stepsProgress, type Activity, type Session, type Step } from './schedule-model'
 import { formatDateTime } from './week'
 
 function StatusLine({ session }: { session: Session | undefined }) {
@@ -46,9 +46,14 @@ export function ActivityItem({
   onComplete,
   onReopen,
   onDelete,
+  steps = [],
+  onToggleStep,
 }: {
   activity: Activity
   session: Session | undefined
+  /** etapas da atividade (vazio = atividade simples, comportamento da ET-002) */
+  steps?: Step[]
+  onToggleStep?: (step: Step, completed: boolean) => void
   isFirst: boolean
   isLast: boolean
   busy: boolean
@@ -61,8 +66,12 @@ export function ActivityItem({
 }) {
   const titleId = useId()
   const lockedId = useId()
+  const stepsId = useId()
   const hasHistory = !!session
   const completed = !!session?.is_completed
+  const [expanded, setExpanded] = useState(false)
+  const ordered = sortSteps(steps)
+  const progress = stepsProgress(ordered)
 
   return (
     <li aria-labelledby={titleId} className="rounded-lg border border-slate-200 bg-white p-3 shadow-sm">
@@ -79,6 +88,58 @@ export function ActivityItem({
           </div>
           {activity.description && (
             <p className="mt-1 whitespace-pre-line break-words text-sm text-slate-600">{activity.description}</p>
+          )}
+          {ordered.length > 0 && (
+            <div className="mt-2">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <button
+                  type="button"
+                  className={`${btn.ghost} -ml-2`}
+                  onClick={() => setExpanded((v) => !v)}
+                  aria-expanded={expanded}
+                  aria-controls={stepsId}
+                  aria-label={`${expanded ? 'Recolher' : 'Expandir'} etapas de “${activity.title}”`}
+                >
+                  {expanded ? <ChevronDown className="size-4" aria-hidden="true" /> : <ChevronRight className="size-4" aria-hidden="true" />}
+                  {progress.done}/{progress.total} etapas
+                </button>
+                <span className="text-xs tabular-nums text-slate-500">{progress.percent}%</span>
+              </div>
+              <div
+                className="mt-1 h-1.5 overflow-hidden rounded-full bg-slate-100"
+                role="progressbar"
+                aria-label={`Progresso de “${activity.title}”`}
+                aria-valuemin={0}
+                aria-valuemax={progress.total}
+                aria-valuenow={progress.done}
+                aria-valuetext={`${progress.done} de ${progress.total} etapas concluídas`}
+              >
+                <div className="h-full rounded-full bg-indigo-600" style={{ width: `${progress.percent}%` }} />
+              </div>
+              {expanded && (
+                <ol id={stepsId} className="mt-2 space-y-1" aria-label={`Etapas de “${activity.title}”`}>
+                  {ordered.map((st) => (
+                    <li key={st.id} className="rounded-md px-1 py-1 hover:bg-slate-50">
+                      <label className="flex cursor-pointer items-start gap-2">
+                        <input
+                          type="checkbox"
+                          className="mt-1 size-4 shrink-0 accent-indigo-600"
+                          checked={st.is_completed}
+                          disabled={busy || !onToggleStep}
+                          onChange={(e) => onToggleStep?.(st, e.target.checked)}
+                        />
+                        <span className="min-w-0 flex-1">
+                          <span className={`block break-words text-sm ${st.is_completed ? 'text-slate-500 line-through' : 'text-slate-900'}`}>
+                            {st.title} <span className="text-xs text-slate-500 no-underline">· {st.planned_minutes} min</span>
+                          </span>
+                          {st.description && <span className="block break-words text-xs text-slate-600">{st.description}</span>}
+                        </span>
+                      </label>
+                    </li>
+                  ))}
+                </ol>
+              )}
+            </div>
           )}
           <div className="mt-2">
             <StatusLine session={session} />

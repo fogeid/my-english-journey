@@ -2,7 +2,7 @@ import { useId } from 'react'
 import { Plus } from 'lucide-react'
 import { btn } from '../../components/ui/styles'
 import { ActivityItem } from './ActivityItem'
-import { LIMITS, type Activity, type Session } from './schedule-model'
+import { LIMITS, type Activity, type Session, type Step } from './schedule-model'
 import { formatDayLabel, type IsoDate } from './week'
 
 export function DayColumn({
@@ -17,6 +17,8 @@ export function DayColumn({
   onComplete,
   onReopen,
   onDelete,
+  steps = {},
+  onToggleStep,
 }: {
   day: IsoDate
   isToday: boolean
@@ -29,6 +31,8 @@ export function DayColumn({
   onComplete: (activity: Activity) => void
   onReopen: (activity: Activity) => void
   onDelete: (activity: Activity) => void
+  steps?: Record<string, Step[]>
+  onToggleStep?: (activity: Activity, step: Step, completed: boolean) => void
 }) {
   const headingId = useId()
   const full = activities.length >= LIMITS.perDayMax
@@ -64,6 +68,8 @@ export function DayColumn({
               onComplete={() => onComplete(a)}
               onReopen={() => onReopen(a)}
               onDelete={() => onDelete(a)}
+              steps={steps[a.id] ?? []}
+              onToggleStep={onToggleStep ? (st, done) => onToggleStep(a, st, done) : undefined}
             />
           ))}
         </ol>

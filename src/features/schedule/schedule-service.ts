@@ -1,5 +1,5 @@
 import type { DbClient } from '../../lib/supabase-context'
-import type { Activity, ActivityValues, Plan, Session, WeekData, WeekSummary } from './schedule-model'
+import type { Activity, ActivityValues, Plan, Session, Step, StepValues, WeekData, WeekSummary } from './schedule-model'
 import { formatDate, type IsoDate } from './week'
 
 /** Erro com mensagem segura para exibir ao usuário. */
@@ -19,6 +19,9 @@ export const SCHEDULE_MESSAGES = {
   perDay: 'Este dia já tem 30 atividades (limite).',
   invalid: 'Dados inválidos. Revise os campos e tente novamente.',
   summary: 'Não foi possível carregar o resumo da semana.',
+  generate: 'Não foi possível gerar o cronograma. Nada foi gravado; tente novamente.',
+  minutesRequired: 'Informe os minutos reais para concluir a última etapa.',
+  tooLong: 'A soma das etapas passa do limite de 240 min por atividade.',
 } as const
 
 interface PgError {
@@ -30,6 +33,8 @@ function toScheduleError(error: PgError | null | undefined, fallback: string): S
   const msg = error?.message ?? ''
   if (/execution history/.test(msg)) return new ScheduleError(SCHEDULE_MESSAGES.history, error)
   if (/more than 30 activities/.test(msg)) return new ScheduleError(SCHEDULE_MESSAGES.perDay, error)
+  if (/actual minutes required/.test(msg)) return new ScheduleError(SCHEDULE_MESSAGES.minutesRequired, error)
+  if (/planned_minutes_range|planned_minutes_check/.test(msg)) return new ScheduleError(SCHEDULE_MESSAGES.tooLong, error)
   if (error?.code === '23514' || error?.code === '22023') return new ScheduleError(SCHEDULE_MESSAGES.invalid, error)
   return new ScheduleError(fallback, error)
 }
@@ -47,6 +52,29 @@ export interface ScheduleService {
   completeActivity(activityId: string, actualMinutes: number): Promise<void>
   reopenActivity(activityId: string): Promise<void>
   reorderDay(planId: string, day: IsoDate, orderedIds: string[]): Promise<void>
+  // ---- ET-007: etapas e gerador ----
+  /** Cria (activityId null) ou edita a atividade e suas etapas numa única transação. */
+  saveActivity(input: { activityId: string | null; planId: string; values: ActivityValues; steps: StepValues[] }): Promise<void>
+  /** Marca/desmarca uma etapa. Na última etapa pendente, actualMinutes conclui a atividade principal. */
+  setStepCompleted(stepId: string, completed: boolean, actualMinutes?: number): Promise<void>
+  /** Grava os itens do gerador numa única transação; itens já existentes são ignorados. */
+  generate(items: GeneratorItemPayload[]): Promise<{ created: number; skipped: number }>
+  /** Atividades existentes no intervalo + chaves já geradas (para detectar conflitos na prévia). */
+  loadGeneratorContext(from: IsoDate, to: IsoDate): Promise<GeneratorContext>
+}
+
+export interface GeneratorItemPayload {
+  generator_key: string
+  study_day: IsoDate
+  skill: string
+  title: string
+  description: string | null
+  planned_minutes: number
+  steps: { title: string; description: string | null; planned_minutes: number }[]
+}
+export interface GeneratorContext {
+  activities: { study_day: string; skill: string; title: string; generator_key: string | null }[]
+  generatedKeys: string[]
 }
 
 const EMPTY_SUMMARY: WeekSummary = {
@@ -75,7 +103,7 @@ export function createSupabaseScheduleService(client: DbClient): ScheduleService
         .maybeSingle()
       if (planRes.error) throw toScheduleError(planRes.error, SCHEDULE_MESSAGES.load)
       const plan: Plan | null = planRes.data
-      if (!plan) return { weekStart, plan: null, activities: [], sessions: {}, summary: EMPTY_SUMMARY }
+      if (!plan) return { weekStart, plan: null, activities: [], sessions: {}, steps: {}, summary: EMPTY_SUMMARY }
 
       const actRes = await client
         .from('study_activities')
@@ -100,10 +128,25 @@ export function createSupabaseScheduleService(client: DbClient): ScheduleService
         for (const s of sesRes.data) if (s.activity_id) sessions[s.activity_id] = s
       }
 
+      const steps: Record<string, Step[]> = {}
+      if (activities.length > 0) {
+        const stRes = await client
+          .from('study_subactivities')
+          .select('id, activity_id, position, title, description, planned_minutes, is_completed, completed_at')
+          .in(
+            'activity_id',
+            activities.map((a) => a.id),
+          )
+          .order('position')
+          .order('id')
+        if (stRes.error) throw toScheduleError(stRes.error, SCHEDULE_MESSAGES.load)
+        for (const st of stRes.data) (steps[st.activity_id] ??= []).push(st)
+      }
+
       const summary = await getWeekSummary(weekStart).catch((e: unknown) => {
         throw e instanceof ScheduleError ? new ScheduleError(SCHEDULE_MESSAGES.load, e) : e
       })
-      return { weekStart, plan, activities, sessions, summary }
+      return { weekStart, plan, activities, sessions, steps, summary }
     },
 
     async createInitialPlan() {
@@ -172,6 +215,54 @@ export function createSupabaseScheduleService(client: DbClient): ScheduleService
         p_ids: orderedIds,
       })
       if (error) throw toScheduleError(error, SCHEDULE_MESSAGES.save)
+    },
+
+    async saveActivity({ activityId, planId, values, steps }) {
+      const { error } = await client.rpc('save_activity', {
+        p_activity_id: activityId as string,
+        p_plan_id: planId,
+        p_study_day: values.studyDay,
+        p_skill: values.skill,
+        p_title: values.title,
+        p_description: values.description ?? '',
+        p_planned_minutes: values.plannedMinutes,
+        p_steps: steps as never, // jsonb
+      })
+      if (error) throw toScheduleError(error, SCHEDULE_MESSAGES.save)
+    },
+
+    async setStepCompleted(stepId, completed, actualMinutes) {
+      const { error } = await client.rpc('set_subactivity_completed', {
+        p_subactivity_id: stepId,
+        p_completed: completed,
+        ...(actualMinutes === undefined ? {} : { p_actual_minutes: actualMinutes }),
+      })
+      if (error) throw toScheduleError(error, SCHEDULE_MESSAGES.save)
+    },
+
+    async generate(items) {
+      const { data, error } = await client.rpc('generate_schedule', { p_items: items as never })
+      if (error || !data) throw toScheduleError(error, SCHEDULE_MESSAGES.generate)
+      const r = data as { created?: number; skipped?: number }
+      return { created: r.created ?? 0, skipped: r.skipped ?? 0 }
+    },
+
+    async loadGeneratorContext(from, to) {
+      const cols = 'id, study_day, skill, title, generator_key'
+      const [range, numbered, keys] = await Promise.all([
+        // tudo o que já existe nos dias que serão gerados (conflitos por data/tipo)
+        client.from('study_activities').select(cols).gte('study_day', from).lte('study_day', to).order('study_day'),
+        // aulas e estudos musicais em QUALQUER data (conflitos por número)
+        client.from('study_activities').select(cols).in('skill', ['lesson', 'music']).order('study_day').limit(5000),
+        client.from('study_activities').select('generator_key').not('generator_key', 'is', null).limit(5000),
+      ])
+      const err = range.error ?? numbered.error ?? keys.error
+      if (err || !range.data || !numbered.data || !keys.data) throw toScheduleError(err, SCHEDULE_MESSAGES.load)
+      const byId = new Map([...range.data, ...numbered.data].map((a) => [a.id, a]))
+      return {
+        activities: [...byId.values()].map(({ study_day, skill, title, generator_key }) => ({ study_day, skill, title, generator_key })),
+        generatedKeys: keys.data.map((k) => k.generator_key).filter((k): k is string => !!k),
+      }
     },
   }
 }

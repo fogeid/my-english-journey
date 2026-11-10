@@ -22,7 +22,7 @@ Pré-requisitos: **Node.js LTS (≥ 24)** e **Docker Desktop** em execução.
 
 ```bash
 npm ci                 # dependências exatas do package-lock.json
-npm run db:start       # sobe o Supabase local no Docker e aplica as 5 migrações
+npm run db:start       # sobe o Supabase local no Docker e aplica as 6 migrações
 npx supabase status    # mostra API URL e anon key
 ```
 
@@ -73,7 +73,7 @@ Navegador ──HTTPS──▶ Cloudflare Pages (arquivos estáticos de dist/, S
     │
     └────HTTPS──▶ Supabase Cloud
                    ├─ Auth (e-mail/senha, cadastro público DESLIGADO)
-                   └─ PostgreSQL + RLS (5 migrações deste repositório)
+                   └─ PostgreSQL + RLS (6 migrações deste repositório)
 ```
 
 - O frontend é **100% estático** (React + Vite): não há servidor próprio nem funções serverless.
@@ -87,13 +87,14 @@ Navegador ──HTTPS──▶ Cloudflare Pages (arquivos estáticos de dist/, S
 ### 1. Supabase Cloud — banco e autenticação
 
 1. Crie um projeto em <https://supabase.com/dashboard> (região próxima, por exemplo São Paulo) e anote o **Project ref**.
-2. **Aplique as 5 migrações** deste repositório (pasta `supabase/migrations/`):
+2. **Aplique as 6 migrações** deste repositório (pasta `supabase/migrations/`):
 
    ```bash
    npx supabase login                          # abre o navegador; não cole tokens em chats
    npx supabase link --project-ref <project-ref>
-   npx supabase db push                        # aplica 202611090001 … 202611100004 em ordem
-   npx supabase migration list                 # confere: local e remoto com as mesmas 5 versões
+   npx supabase db push --dry-run              # lista o que seria aplicado, sem alterar nada
+   npx supabase db push                        # aplica 202611090001 … 202611100005 em ordem
+   npx supabase migration list                 # confere: local e remoto com as mesmas 6 versões
    ```
 
    Não use `db reset` no projeto remoto.
@@ -149,7 +150,7 @@ Navegador ──HTTPS──▶ Cloudflare Pages (arquivos estáticos de dist/, S
 
   A pasta `backups/` e qualquer `.sql` fora de `supabase/migrations/` são ignorados pelo Git — guarde os arquivos fora de repositórios públicos (contêm seus dados e o hash da senha). Verifique também, no painel do Supabase (*Database* → *Backups*), quais backups automáticos o seu plano oferece — não conte só com eles.
 - **Código:** o GitHub é a fonte do código e das migrações; os dados ficam só no Supabase e nos seus dumps.
-- **Restauração:** em um banco vazio com as 5 migrações aplicadas, `psql "<connection string>" -v ON_ERROR_STOP=1 -f backups/<arquivo>.sql` (a connection string fica em *Project Settings* → *Database*; não a versione).
+- **Restauração:** em um banco vazio com as 6 migrações aplicadas, `psql "<connection string>" -v ON_ERROR_STOP=1 -f backups/<arquivo>.sql` (a connection string fica em *Project Settings* → *Database*; não a versione).
 
 ## Estudos musicais (ET-006)
 
@@ -210,6 +211,24 @@ Gráficos em SVG/HTML, sem biblioteca: série única em um só matiz, rótulos s
   Sequência limitada a 100; 1 dia = 24 h; horários gravados em UTC e exibidos em America/Cuiaba.
 - **Dashboard:** "Revisões pendentes" continua contando só as **vencidas**; "Palavras novas" (nunca revisadas) aparece separado, com o botão **Revisar agora**. Ambos usam a hora do servidor, como a fila.
 
+## Cronograma — subatividades e gerador semanal (ET-007)
+
+- **Subatividades (etapas)** opcionais em qualquer atividade: título (1–120), descrição (até 1000), minutos (1–240), ordem; no máximo 20 por atividade. Criadas, editadas, reordenadas (↑/↓) e removidas no próprio formulário da atividade, gravadas numa única operação atômica (`save_activity`).
+- Com etapas, os **minutos previstos da atividade = soma das etapas** (até 240), calculados e exibidos como somente leitura. O dashboard e o resumo continuam contando **só a atividade principal** — nada é contado duas vezes.
+- No cartão: **N/M etapas**, barra de progresso e lista expansível (recolhida por padrão) com uma caixa por etapa.
+- **Sincronização:**
+  - marcar a **última** etapa pendente conclui a atividade, pedindo antes os **minutos reais** (mesma regra da ET-002);
+  - desmarcar uma etapa reabre a atividade (minutos preservados);
+  - concluir a atividade marca todas as etapas; reabrir deixa todas pendentes.
+- Atividades antigas, sem etapas, funcionam exatamente como antes.
+- **Gerar cronograma semanal:** data de início, dias (1–14; padrão 7), próxima aula nº (padrão 4), próximo estudo musical nº (padrão 2), durações (padrão 60/60) e complementares (sim/não).
+  - Por dia: **Aula ChatGPT** (6 etapas: 10/15/10/10/10/5 min), **Estudo musical** (5 etapas: 10/15/15/10/10 min) e as complementares do dia da semana (seg Duolingo 20; ter Podcast A1 30; qua BBC Learning English 25; qui Duolingo 20 + Flashcards 10; sex Série em inglês 30; sáb Leitura A1 30; dom Revisão e conversação 30). Com outra duração, as etapas são reescaladas proporcionalmente.
+  - Temas planejados: aulas 04–10 e músicas 02–08 (só título, artista e foco — **sem letras**). Fora disso: "tema a definir".
+  - **Prévia antes de gravar**, com selos *Nova* / *Já existe* / *Conflito* e o motivo. Só os itens novos e marcados são gravados; nada existente é sobrescrito.
+  - Idempotente: cada item tem uma chave (`generator_key`, única por usuário) e reexecutar não duplica. A gravação é tudo ou nada e cria os planos semanais que faltarem.
+  - Nada é marcado como concluído, nenhuma aula ou estudo musical é registrado e nenhuma nota é atribuída.
+- **Limitação conhecida:** ao remover etapas pendentes de uma atividade em que as restantes já estão concluídas, a atividade **não** é concluída automaticamente (faltam os minutos reais); use **Concluir**.
+
 ## Cronograma (ET-002)
 
 - **Semana ISO** (segunda a domingo) no fuso **America/Cuiaba**. Datas do plano são dias civis (`DATE`).
@@ -217,7 +236,7 @@ Gráficos em SVG/HTML, sem biblioteca: série única em um só matiz, rótulos s
 - **Nada é criado ao abrir a página.** Numa semana sem plano:
   - **Criar meu plano inicial** (somente na semana atual): cria o plano e 5 atividades na segunda-feira (60 min). Terça a domingo ficam vazios. Idempotente: se o plano da semana já existe, nada muda.
   - **Criar plano vazio** (qualquer semana). No máximo um plano por semana; nada é copiado de outras semanas.
-- **Atividades:** título (1–120), descrição opcional (até 2000), categoria (`grammar`, `vocabulary`, `listening`, `speaking`, `review`, `other`), minutos previstos (1–240), dia e ordem. No máximo 30 por dia. Editar permite mudar de dia **dentro da mesma semana**; a ordem é ajustada com os botões ↑/↓.
+- **Atividades:** título (1–120), descrição opcional (até 2000), categoria (`lesson`, `music`, `grammar`, `vocabulary`, `listening`, `speaking`, `reading`, `review`, `other` — as três primeiras, ET-007), minutos previstos (1–240), dia e ordem. No máximo 30 por dia. Editar permite mudar de dia **dentro da mesma semana**; a ordem é ajustada com os botões ↑/↓.
 - **Conclusão:** pede os minutos reais (0–480) e só registra após confirmação; `0` = concluída sem tempo medido. Cada atividade tem **uma única execução** (`study_sessions`), atualizada a cada nova conclusão.
 - **Reabrir:** a execução deixa de contar como concluída, mas minutos, `completed_at` e o registro são preservados.
 - **Exclusão:** só para atividades **sem execução**. Atividades com execução (concluída ou reaberta) não podem ser excluídas, nem por cascata ao excluir o plano. O cliente não pode apagar execuções.
@@ -256,6 +275,12 @@ Migrações (incrementais, aplicadas em ordem):
 3. `supabase/migrations/202611100002_vocabulary_review.sql` — ET-003: colunas `notes`, `review_streak`, `review_count` em `vocabulary`; `request_id`, `interval_minutes`, `streak_after`, `next_review_at` em `vocabulary_reviews`; limites, unicidade normalizada por usuário, idempotência por `request_id`; FK do histórico passa a bloquear a exclusão da palavra (a exclusão da conta continua em cascata); funções `review_vocabulary` (revisão atômica, com trava da palavra), `get_review_queue`, `get_vocabulary_summary` e `list_vocabulary`, todas `SECURITY INVOKER` e só para `authenticated`.
 4. `supabase/migrations/202611100003_lessons.sql` — ET-004: colunas `title`, `level`, `status`, `difficulties`, `recommendations` em `lessons` (reaproveita `lesson_number`, `studied_on`, `topics`, `report`); tabelas `lesson_blocks` e `lesson_exercises` com FKs compostas (mesmo dono), RLS e cascata ao excluir a aula/bloco. Sem funções novas.
 5. `supabase/migrations/202611100004_music.sql` — ET-006: colunas `study_number`, `level`, `status`, `initial_score`, `final_score` em `music_studies` (reaproveita `song`, `artist`, `studied_on`, `report`, `initial_comprehension`/`final_comprehension` como comentários); tabelas `music_activities` e `music_words` com FKs compostas (mesmo dono), RLS e cascata; `music_words.vocabulary_id` liga opcionalmente ao vocabulário. Sem funções novas.
+6. `supabase/migrations/202611100005_schedule_subactivities.sql` — ET-007:
+   - tabela `study_subactivities` (FK composta com a atividade do mesmo dono, cascata ao excluir a atividade, RLS com 4 policies);
+   - coluna `study_activities.generator_key` (índice único parcial por usuário) e categorias `lesson`, `music` e `reading`;
+   - funções `save_activity`, `set_subactivity_completed`, `generate_schedule` e `schedule_write_steps` (auxiliar, confere o dono);
+   - `complete_activity`/`reopen_activity` recriadas com o mesmo contrato, agora sincronizando as etapas.
+   Tudo `SECURITY INVOKER`, com `EXECUTE` só para `authenticated`. Aborta se a tabela já existir; não altera dados existentes.
 
 Para aplicar uma nova migração no banco local **sem perder dados**: `npx supabase migration up`. Para recriar o banco local do zero (apaga os dados locais): `npm run db:reset`.
 
@@ -274,7 +299,7 @@ Publicação em um projeto remoto: veja **Preparar uma publicação futura** no 
 ```bash
 npm run test               # unitários (não precisam de Supabase)
 npm run db:start           # necessário para o teste abaixo
-npm run test:rls           # integrado contra o Supabase local (ET-001 a ET-005)
+npm run test:rls           # integrado contra o Supabase local (ET-001 a ET-007)
 ```
 
 O teste RLS recusa rodar se a URL do Supabase não for `localhost`/`127.0.0.1`. Ele cria duas contas fictícias **locais**, insere dados mínimos de teste e remove tudo ao final.
@@ -299,6 +324,7 @@ supabase/
   config.toml     configuração do Supabase local (signup desabilitado)
   migrations/202611090001_initial.sql
   migrations/202611100001_schedule.sql
+  migrations/202611100002 … 202611100005 (vocabulário, aulas, música, subatividades/gerador)
 tests/
   unit/           rotas, autenticação, dashboard, datas/validação, cronograma (serviço em memória)
   rls/            testes integrados contra o Supabase local (ET-001 e ET-002)

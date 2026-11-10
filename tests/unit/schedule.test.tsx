@@ -158,7 +158,9 @@ describe('Cronograma — CRUD e ordem', () => {
     await user.click(screen.getByRole('button', { name: /Adicionar atividade em quarta-feira/ }))
     const select = within(await screen.findByRole('dialog')).getByLabelText('Categoria')
     const values = within(select).getAllByRole('option').map((o) => (o as HTMLOptionElement).value)
-    expect(values).toEqual(['', 'grammar', 'vocabulary', 'listening', 'speaking', 'review', 'other'])
+    // ET-007 acrescentou Aula ChatGPT (lesson), Estudo musical (music) e Reading; writing continua fora.
+    expect(values).toEqual(['', 'lesson', 'music', 'grammar', 'vocabulary', 'listening', 'speaking', 'reading', 'review', 'other'])
+    expect(values).not.toContain('writing')
   })
 
   it('5. edição e mudança de dia na mesma semana', async () => {

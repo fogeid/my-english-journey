@@ -13,8 +13,13 @@ export function CompleteActivityDialog({
   serverError,
   onConfirm,
   onClose,
+  heading,
+  note,
 }: {
   activity: Activity
+  /** título/descrição alternativos (ex.: conclusão pela última etapa — ET-007) */
+  heading?: string
+  note?: string
   busy: boolean
   serverError: string | null
   onConfirm: (actualMinutes: number) => void
@@ -34,8 +39,8 @@ export function CompleteActivityDialog({
 
   return (
     <Modal
-      title="Concluir atividade"
-      description={`“${activity.title}” — previsto: ${activity.planned_minutes} min.`}
+      title={heading ?? 'Concluir atividade'}
+      description={note ?? `“${activity.title}” — previsto: ${activity.planned_minutes} min.`}
       onClose={onClose}
       closeDisabled={busy}
     >

@@ -128,10 +128,10 @@ afterAll(async () => {
 
 describe('Catálogo do banco', () => {
   // ET-004 acrescentou lesson_blocks e lesson_exercises; ET-006, music_activities e music_words —
-  // todas com a mesma regra (RLS + 4 policies por dono).
-  const ALL_TABLES = [...TABLES, 'lesson_blocks', 'lesson_exercises', 'music_activities', 'music_words']
+  // todas com a mesma regra (RLS + 4 policies por dono). ET-007 (cronograma): study_subactivities.
+  const ALL_TABLES = [...TABLES, 'lesson_blocks', 'lesson_exercises', 'music_activities', 'music_words', 'study_subactivities']
 
-  it('as nove tabelas existem em public e todas têm RLS habilitado', () => {
+  it('as dez tabelas existem em public e todas têm RLS habilitado', () => {
     const rows = runLocalSql(
       `select c.relname || ':' || c.relrowsecurity from pg_class c join pg_namespace n on n.oid = c.relnamespace
         where n.nspname = 'public' and c.relkind = 'r' order by 1`,

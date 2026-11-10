@@ -1,18 +1,21 @@
-import type { Activity, Plan, Session, WeekSummary } from '../../src/features/schedule/schedule-model'
+import type { Activity, Plan, Session, Step, WeekSummary } from '../../src/features/schedule/schedule-model'
 import { SCHEDULE_MESSAGES, ScheduleError, type ScheduleService } from '../../src/features/schedule/schedule-service'
-import { currentWeekStart, isDateInWeek } from '../../src/features/schedule/week'
+import { currentWeekStart, isDateInWeek, weekStartOf } from '../../src/features/schedule/week'
 
 /**
  * ScheduleService em memória para testes de interface.
  * Espelha os contratos do banco (validados de verdade em tests/rls/schedule-rls.test.ts):
  * um plano por semana, plano inicial idempotente, uma execução por atividade,
- * reabertura preservando minutos, exclusão bloqueada com histórico.
+ * reabertura preservando minutos, exclusão bloqueada com histórico; ET-007: etapas (subatividades)
+ * com a mesma regra de conclusão da RPC, gravação atômica e gerador idempotente por generator_key.
  * Permite injetar falhas para testar estados de erro.
  */
 export function createFakeScheduleService() {
   const plans: Plan[] = []
   const activities: Activity[] = []
   const sessions: Session[] = []
+  const steps: Step[] = []
+  const generatorKeys = new Map<string, string>() // generator_key -> activity id
   let seq = 0
   const nextId = (p: string) => `${p}-${String(++seq).padStart(4, '0')}`
   const failures = new Set<keyof ScheduleService>()
@@ -50,7 +53,10 @@ export function createFakeScheduleService() {
       const acts = plan ? activities.filter((a) => a.plan_id === plan.id).map((a) => ({ ...a })) : []
       const map: Record<string, Session> = {}
       for (const s of sessions) if (s.activity_id && acts.some((a) => a.id === s.activity_id)) map[s.activity_id] = { ...s }
-      return { weekStart, plan: plan && { ...plan }, activities: acts, sessions: map, summary: summaryOf(weekStart) }
+      const stepMap: Record<string, Step[]> = {}
+      for (const st of steps) if (acts.some((a) => a.id === st.activity_id)) (stepMap[st.activity_id] ??= []).push({ ...st })
+      for (const k of Object.keys(stepMap)) stepMap[k].sort((a, b) => a.position - b.position)
+      return { weekStart, plan: plan && { ...plan }, activities: acts, sessions: map, steps: stepMap, summary: summaryOf(weekStart) }
     },
     async getWeekSummary(weekStart) {
       track('getWeekSummary', [weekStart])
@@ -109,6 +115,7 @@ export function createFakeScheduleService() {
       const i = activities.findIndex((a) => a.id === activityId)
       if (i < 0) throw new ScheduleError(SCHEDULE_MESSAGES.save)
       activities.splice(i, 1)
+      for (let k = steps.length - 1; k >= 0; k--) if (steps[k].activity_id === activityId) steps.splice(k, 1)
     },
     async completeActivity(activityId, actualMinutes) {
       track('completeActivity', [activityId, actualMinutes])
@@ -117,12 +124,94 @@ export function createFakeScheduleService() {
       const existing = sessions.find((s) => s.activity_id === activityId)
       if (existing) Object.assign(existing, { is_completed: true, completed_at: now, actual_minutes: actualMinutes })
       else sessions.push({ id: nextId('ses'), activity_id: activityId, completed_at: now, actual_minutes: actualMinutes, is_completed: true, reopened_at: null })
+      for (const st of steps) if (st.activity_id === activityId && !st.is_completed) Object.assign(st, { is_completed: true, completed_at: now })
     },
     async reopenActivity(activityId) {
       track('reopenActivity', [activityId])
       const s = sessions.find((x) => x.activity_id === activityId)
       if (!s) throw new ScheduleError(SCHEDULE_MESSAGES.save)
       if (s.is_completed) Object.assign(s, { is_completed: false, reopened_at: new Date().toISOString() })
+      for (const st of steps) if (st.activity_id === activityId) Object.assign(st, { is_completed: false, completed_at: null })
+    },
+    async saveActivity({ activityId, planId, values: v, steps: list }) {
+      track('saveActivity', [activityId, v, list])
+      const total = list.reduce((n, st) => n + st.planned_minutes, 0)
+      if (list.length > 0 && total > 240) throw new ScheduleError(SCHEDULE_MESSAGES.tooLong)
+      if (list.some((st) => st.id && !steps.some((x) => x.id === st.id && x.activity_id === activityId))) throw new ScheduleError(SCHEDULE_MESSAGES.invalid)
+      let id = activityId
+      if (!id) {
+        await service.createActivity('u', planId, { ...v, plannedMinutes: list.length ? total : v.plannedMinutes })
+        id = activities[activities.length - 1].id
+      } else {
+        await service.updateActivity(id, { ...v, plannedMinutes: list.length ? total : v.plannedMinutes })
+      }
+      const keep = new Set<string>()
+      list.forEach((st, i) => {
+        const existing = st.id ? steps.find((x) => x.id === st.id) : undefined
+        if (existing) {
+          Object.assign(existing, { position: i + 1, title: st.title, description: st.description, planned_minutes: st.planned_minutes })
+          keep.add(existing.id)
+        } else {
+          const nid = nextId('step')
+          steps.push({ id: nid, activity_id: id!, position: i + 1, title: st.title, description: st.description, planned_minutes: st.planned_minutes, is_completed: false, completed_at: null })
+          keep.add(nid)
+        }
+      })
+      for (let k = steps.length - 1; k >= 0; k--) if (steps[k].activity_id === id && !keep.has(steps[k].id)) steps.splice(k, 1)
+      const mine = steps.filter((x) => x.activity_id === id)
+      const ses = sessions.find((x) => x.activity_id === id)
+      if (mine.length && mine.some((x) => !x.is_completed) && ses?.is_completed) Object.assign(ses, { is_completed: false, reopened_at: new Date().toISOString() })
+    },
+    async setStepCompleted(stepId, completed, actualMinutes) {
+      track('setStepCompleted', [stepId, completed, actualMinutes])
+      const st = steps.find((x) => x.id === stepId)
+      if (!st) throw new ScheduleError(SCHEDULE_MESSAGES.save)
+      if (st.is_completed === completed) return
+      const siblings = steps.filter((x) => x.activity_id === st.activity_id)
+      const allDone = siblings.every((x) => x.is_completed || x.id === stepId)
+      if (completed && allDone) {
+        if (actualMinutes === undefined) throw new ScheduleError(SCHEDULE_MESSAGES.minutesRequired)
+        await service.completeActivity(st.activity_id, actualMinutes)
+        return
+      }
+      Object.assign(st, { is_completed: completed, completed_at: completed ? new Date().toISOString() : null })
+      const ses = sessions.find((x) => x.activity_id === st.activity_id)
+      if (!completed && ses?.is_completed) Object.assign(ses, { is_completed: false, reopened_at: new Date().toISOString() })
+    },
+    async generate(items) {
+      track('generate', [items])
+      let created = 0
+      let skipped = 0
+      // tudo ou nada, como a RPC: valida antes de gravar
+      if (items.some((it) => !it.generator_key)) throw new ScheduleError(SCHEDULE_MESSAGES.generate)
+      for (const it of items) {
+        if (generatorKeys.has(it.generator_key)) {
+          skipped++
+          continue
+        }
+        const week = weekStartOf(it.study_day)
+        if (!plans.some((p) => p.week_start === week)) plans.push({ id: nextId('plan'), week_start: week, title: `Semana de ${week}` })
+        const plan = plans.find((p) => p.week_start === week)!
+        await service.saveActivity({
+          activityId: null,
+          planId: plan.id,
+          values: { title: it.title, description: it.description, skill: it.skill, plannedMinutes: it.planned_minutes, studyDay: it.study_day },
+          steps: it.steps,
+        })
+        generatorKeys.set(it.generator_key, activities[activities.length - 1].id)
+        created++
+      }
+      return { created, skipped }
+    },
+    async loadGeneratorContext(from, to) {
+      track('loadGeneratorContext', [from, to])
+      const keyOf = (id: string) => [...generatorKeys.entries()].find(([, v]) => v === id)?.[0] ?? null
+      return {
+        activities: activities
+          .filter((a) => (a.study_day >= from && a.study_day <= to) || a.skill === 'lesson' || a.skill === 'music')
+          .map((a) => ({ study_day: a.study_day, skill: a.skill, title: a.title, generator_key: keyOf(a.id) })),
+        generatedKeys: [...generatorKeys.keys()],
+      }
     },
     async reorderDay(planId, day, ids) {
       track('reorderDay', [planId, day, ids])
@@ -138,6 +227,8 @@ export function createFakeScheduleService() {
     plans,
     activities,
     sessions,
+    steps,
+    generatorKeys,
     calls,
     failOn: (name: keyof ScheduleService) => failures.add(name),
     recover: (name: keyof ScheduleService) => failures.delete(name),

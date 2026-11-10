@@ -79,14 +79,16 @@ describe('Esquema efetivo da ET-002 (catálogo)', () => {
     expect(versions.slice(0, 2)).toEqual(['202611090001', '202611100001'])
   })
 
-  it('RLS segue habilitado e as 12 policies do cronograma são as da ET-001, todas TO authenticated', () => {
+  it('RLS segue habilitado e as 12 policies do cronograma da ET-001 seguem lá (+4 de study_subactivities, ET-007), todas TO authenticated', () => {
     expect(
       runLocalSql(`select relname || ':' || relrowsecurity from pg_class where relname in ('study_plans','study_activities','study_sessions') order by 1`),
     ).toEqual(['study_activities:true', 'study_plans:true', 'study_sessions:true'])
     const policies = runLocalSql(
       `select policyname || ':' || array_to_string(roles, ',') from pg_policies where tablename like 'study_%' order by 1`,
     )
-    expect(policies).toHaveLength(12)
+    // ET-007 acrescentou study_subactivities com as mesmas 4 policies por dono.
+    expect(policies).toHaveLength(16)
+    expect(policies.filter((p) => p.startsWith('study_subactivities_'))).toHaveLength(4)
     expect(policies.every((p) => p.endsWith(':authenticated'))).toBe(true)
   })
 
@@ -123,6 +125,7 @@ describe('Esquema efetivo da ET-002 (catálogo)', () => {
       'study_activities:authenticated:DELETE,INSERT,SELECT,UPDATE',
       'study_plans:authenticated:DELETE,INSERT,SELECT,UPDATE',
       'study_sessions:authenticated:INSERT,SELECT,UPDATE',
+      'study_subactivities:authenticated:DELETE,INSERT,SELECT,UPDATE', // ET-007
     ])
   })
 
