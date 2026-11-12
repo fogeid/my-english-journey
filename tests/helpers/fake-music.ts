@@ -1,12 +1,33 @@
-import type { MusicStudyDetail } from '../../src/features/music/music-model'
-import { MUSIC_MESSAGES, MusicError, type MusicService } from '../../src/features/music/music-service'
+import type { MusicStudyDetail, MusicWordRow } from '../../src/features/music/music-model'
+import { MUSIC_MESSAGES, MusicError, type MusicService, type WordSyncResult } from '../../src/features/music/music-service'
 
 /** MusicService em memória (testes de interface). Integridade real: tests/rls/music-rls.test.ts. */
 export function createFakeMusicService(existingVocabulary: string[] = []) {
   let seq = 0
   const id = () => `00000000-0000-4000-8000-${String(++seq).padStart(12, '0')}`
   const studies: MusicStudyDetail[] = []
-  const vocabulary = existingVocabulary.map((word) => ({ id: id(), word }))
+  const vocabulary: { id: string; word: string; translation: string; example_1: string | null }[] = existingVocabulary.map((word) => ({ id: id(), word, translation: 't', example_1: null }))
+  let failNext = false
+  /** Simula falha da transação no servidor: nada é gravado. */
+  const failOnce = () => { failNext = true }
+  const fail = (): never => {
+    failNext = false
+    throw new MusicError(MUSIC_MESSAGES.save)
+  }
+  /** Mesma regra de public.sync_music_word (a regra real é testada em tests/rls/music-vocabulary-sync-rls.test.ts). */
+  const sync = (w: MusicWordRow): WordSyncResult => {
+    if (w.vocabulary_id) return 'already'
+    const existing = vocabulary.find((x) => norm(x.word) === norm(w.term))
+    if (existing) {
+      w.vocabulary_id = existing.id
+      return 'linked'
+    }
+    if (!w.meaning) return 'pending'
+    const v = { id: id(), word: w.term, translation: w.meaning, example_1: w.excerpt }
+    vocabulary.push(v)
+    w.vocabulary_id = v.id
+    return 'created'
+  }
   const calls: Record<string, unknown[][]> = {}
   const track = (n: keyof MusicService, args: unknown[]) => ((calls[n] ??= []).push(args), undefined)
   const find = (sid: string) => studies.find((s) => s.id === sid)!
@@ -56,31 +77,37 @@ export function createFakeMusicService(existingVocabulary: string[] = []) {
       if (a) Object.assign(a, v)
       else s.music_activities.push({ id: id(), user_id: userId, music_study_id: sid, activity_type: type, created_at: now(), updated_at: now(), ...v })
     },
-    async addWord(userId, sid, v) {
+    async addWord(sid, v) {
       track('addWord', [sid, v])
+      if (failNext) return fail()
       const s = find(sid)
       if (s.music_words.some((w) => norm(w.term) === norm(v.term))) throw new MusicError(MUSIC_MESSAGES.duplicateWord)
-      s.music_words.push({ id: id(), user_id: userId, music_study_id: sid, vocabulary_id: null, created_at: now(), ...v })
+      const w = { id: id(), user_id: s.user_id, music_study_id: sid, vocabulary_id: null, created_at: now(), ...v }
+      s.music_words.push(w)
+      return sync(w)
+    },
+    async updateWord(wid, v) {
+      track('updateWord', [wid, v])
+      if (failNext) return fail()
+      const w = studies.flatMap((s) => s.music_words).find((x) => x.id === wid)!
+      Object.assign(w, v)
+      return sync(w)
     },
     async removeWord(wid) {
       track('removeWord', [wid])
       for (const s of studies) s.music_words = s.music_words.filter((w) => w.id !== wid)
     },
-    async findVocabulary(term) {
-      track('findVocabulary', [term])
-      return vocabulary.find((v) => norm(v.word) === norm(term)) ?? null
-    },
-    async linkWord(wid, vid) {
-      track('linkWord', [wid, vid])
-      for (const s of studies) for (const w of s.music_words) if (w.id === wid) w.vocabulary_id = vid
-    },
-    async addToVocabulary(_userId, wid, v) {
-      track('addToVocabulary', [wid, v])
-      if (vocabulary.some((x) => norm(x.word) === norm(v.word))) throw new MusicError(MUSIC_MESSAGES.vocabularyDuplicate)
-      const vid = id()
-      vocabulary.push({ id: vid, word: v.word })
-      await service.linkWord(wid, vid)
+    async syncWords() {
+      track('syncWords', [])
+      if (failNext) return fail()
+      const r = { created: 0, linked: 0, pending: 0 }
+      for (const w of studies.flatMap((s) => s.music_words)) {
+        if (w.vocabulary_id) continue
+        const res = sync(w)
+        if (res !== 'already') r[res]++
+      }
+      return r
     },
   }
-  return { service, studies, vocabulary, calls }
+  return { service, studies, vocabulary, calls, failOnce }
 }

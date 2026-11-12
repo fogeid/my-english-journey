@@ -11,9 +11,12 @@ describe('1. Validação do vocabulário', () => {
     expect(values).toMatchObject({ word: 'tired', notes: null, part_of_speech: null, source_type: 'manual', source_ref: null })
   })
 
-  it('termo, tradução e os dois exemplos são obrigatórios (espaços não contam)', () => {
+  it('termo e tradução são obrigatórios (espaços não contam); exemplos são opcionais (ET-008)', () => {
     const { errors } = validateVocabulary({ ...EMPTY_INPUT, word: '   ', translation: ' ', example1: '', example2: '  ' })
-    expect(Object.keys(errors).sort()).toEqual(['example1', 'example2', 'translation', 'word'])
+    expect(Object.keys(errors).sort()).toEqual(['translation', 'word'])
+    const ok = validateVocabulary({ ...valid, example1: '  ', example2: '' })
+    expect(ok.errors).toEqual({})
+    expect(ok.values).toMatchObject({ example_1: null, example_2: null })
   })
 
   it('limites: termo 120, tradução 240, exemplos 500, notas 1000', () => {

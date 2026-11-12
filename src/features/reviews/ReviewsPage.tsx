@@ -180,10 +180,12 @@ export function ReviewsPage() {
             <>
               <div ref={answerRef} tabIndex={-1} aria-label="Resposta" className="mt-5 space-y-3 border-t border-slate-100 pt-4 focus:outline-none">
                 <p className="text-xl text-slate-800">{current.translation}</p>
-                <ul className="space-y-1 text-slate-700" aria-label="Exemplos">
-                  <li lang="en" className="break-words">• {current.example_1}</li>
-                  <li lang="en" className="break-words">• {current.example_2}</li>
-                </ul>
+                {(current.example_1 || current.example_2) && (
+                  <ul className="space-y-1 text-slate-700" aria-label="Exemplos">
+                    {current.example_1 && <li lang="en" className="break-words">• {current.example_1}</li>}
+                    {current.example_2 && <li lang="en" className="break-words">• {current.example_2}</li>}
+                  </ul>
+                )}
               </div>
 
               {error && (

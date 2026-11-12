@@ -78,44 +78,104 @@ describe('/music', () => {
     expect(fake.studies[0].music_activities).toHaveLength(1)
   })
 
-  it('palavras: adicionar ao vocabulário é explícito e não duplica', async () => {
+  it('palavras: sincronizam automaticamente com o vocabulário, sem duplicar; significado obrigatório', async () => {
     const { fake, user } = setup('/music', ['Dreamer'])
     await createStudy(user)
-    const addWord = async (term: string, meaning: string, excerpt = '') => {
+    const openWordForm = async () => {
       await user.click(screen.getByRole('button', { name: 'Adicionar palavra' }))
-      const d = await screen.findByRole('dialog', { name: 'Palavra ou expressão do estudo' })
+      return screen.findByRole('dialog', { name: 'Palavra ou expressão do estudo' })
+    }
+    const addWord = async (term: string, meaning: string, excerpt = '') => {
+      const d = await openWordForm()
       await user.type(within(d).getByLabelText(/Palavra ou expressão/), term)
       await user.type(within(d).getByLabelText(/Significado/), meaning)
       if (excerpt) await user.type(within(d).getByLabelText(/Trecho curto/), excerpt)
       await user.click(within(d).getByRole('button', { name: 'Salvar' }))
       await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
     }
+
+    // significado obrigatório: nada é enviado sem ele
+    let d = await openWordForm()
+    await user.type(within(d).getByLabelText(/Palavra ou expressão/), 'imagine')
+    await user.click(within(d).getByRole('button', { name: 'Salvar' }))
+    expect(within(d).getByText('Informe o significado.')).toBeInTheDocument()
+    expect(fake.calls.addWord).toBeUndefined()
+    await user.click(within(d).getByRole('button', { name: 'Cancelar' }))
+
+    // já existe no vocabulário → só vincula (sem criar outra)
     await addWord('dreamer', 'sonhador')
+    expect(await screen.findByText(/Palavra registrada no estudo e vinculada à palavra que já estava no vocabulário/)).toBeInTheDocument()
+    // nova → criada no vocabulário com tradução e exemplo do estudo
     await addWord('brotherhood', 'irmandade', 'A brotherhood of man')
-    expect(fake.vocabulary).toHaveLength(1) // registrar no estudo NÃO cria no vocabulário
-
-    // palavra já existente no vocabulário → oferece vincular, sem criar outra
-    await user.click(screen.getByRole('button', { name: 'Adicionar “dreamer” ao vocabulário' }))
-    let d = await screen.findByRole('dialog', { name: 'Palavra já está no vocabulário' })
-    await user.click(within(d).getByRole('button', { name: 'Vincular à existente' }))
-    await screen.findByText('Palavra vinculada ao vocabulário existente.')
-    expect(fake.vocabulary).toHaveLength(1)
-    expect(fake.studies[0].music_words[0].vocabulary_id).toBe(fake.vocabulary[0].id)
-
-    // palavra nova → formulário do vocabulário pré-preenchido; exige o 2º exemplo
-    await user.click(screen.getByRole('button', { name: 'Adicionar “brotherhood” ao vocabulário' }))
-    d = await screen.findByRole('dialog', { name: 'Adicionar palavra' })
-    expect(within(d).getByLabelText(/Palavra ou expressão/)).toHaveValue('brotherhood')
-    expect(within(d).getByLabelText(/Tradução/)).toHaveValue('irmandade')
-    expect(within(d).getByLabelText(/Exemplo 1/)).toHaveValue('A brotherhood of man')
-    expect(within(d).getByLabelText('Origem')).toHaveValue(`music:${fake.studies[0].id}`)
-    await user.click(within(d).getByRole('button', { name: 'Salvar' }))
-    expect(within(d).getByText('Informe o exemplo 2.')).toBeInTheDocument()
-    await user.type(within(d).getByLabelText(/Exemplo 2/), 'The brotherhood met.')
-    await user.click(within(d).getByRole('button', { name: 'Salvar' }))
-    await screen.findByText('“brotherhood” adicionada ao vocabulário.')
-    expect(fake.vocabulary.map((v) => v.word)).toEqual(['Dreamer', 'brotherhood'])
+    expect(await screen.findByText('Palavra registrada no estudo e adicionada ao vocabulário.')).toBeInTheDocument()
+    expect(fake.vocabulary.map((v) => [v.word, v.translation, v.example_1])).toEqual([
+      ['Dreamer', 't', null],
+      ['brotherhood', 'irmandade', 'A brotherhood of man'],
+    ])
     expect(screen.getAllByRole('link', { name: 'No vocabulário' })).toHaveLength(2)
+    expect(screen.queryByRole('button', { name: 'Sincronizar com o vocabulário' })).not.toBeInTheDocument()
+
+    // falha da transação: erro exibido, nada gravado, nada de mensagem de sucesso
+    fake.failOnce()
+    d = await openWordForm()
+    await user.type(within(d).getByLabelText(/Palavra ou expressão/), 'world')
+    await user.type(within(d).getByLabelText(/Significado/), 'mundo')
+    await user.click(within(d).getByRole('button', { name: 'Salvar' }))
+    expect(await within(d).findByRole('alert')).toHaveTextContent('Não foi possível salvar')
+    expect(fake.vocabulary).toHaveLength(2)
+    expect(fake.studies[0].music_words).toHaveLength(2)
+    expect(screen.queryByText(/Palavra registrada/)).not.toBeInTheDocument()
+  })
+
+  it('palavras antigas: editar acrescenta o significado e sincroniza; sincronização retroativa; excluir preserva o vocabulário', async () => {
+    const fake = createFakeMusicService(['love'])
+    const sid = await fake.service.create('00000000-0000-4000-8000-0000000000aa', { study_number: 1, song: 'Old', artist: 'Band', studied_on: '2026-11-01', level: 'A1', report: null })
+    const legacy = (term: string, meaning: string | null) =>
+      fake.studies[0].music_words.push({ id: `00000000-0000-4000-8000-0000000009${fake.studies[0].music_words.length}0`, user_id: fake.studies[0].user_id, music_study_id: sid, term, meaning, excerpt: null, vocabulary_id: null, created_at: new Date().toISOString() })
+    legacy('LOVE', null) // já existe no vocabulário
+    legacy('heart', 'coração') // nova, com significado
+    legacy('gonna', null) // sem significado → pendente
+    const { client } = createFakeSupabase({ session: makeSession() })
+    const user = userEvent.setup()
+    renderApp(client, `/music/${sid}`, undefined, undefined, undefined, fake.service)
+
+    expect(await screen.findByText(/3 palavras deste estudo ainda não estão no vocabulário/)).toBeInTheDocument()
+    expect(screen.getAllByText('Fora do vocabulário: falta o significado')).toHaveLength(2)
+    await user.click(screen.getByRole('button', { name: 'Sincronizar com o vocabulário' }))
+    expect(
+      await screen.findByText('Sincronização concluída: 1 palavra adicionada ao vocabulário; 1 vinculada a palavra existente; 1 pendente sem significado (edite para sincronizar).'),
+    ).toBeInTheDocument()
+    expect(fake.vocabulary.map((v) => v.word)).toEqual(['love', 'heart'])
+
+    // editar a pendente: a palavra em inglês não muda; com significado, sincroniza
+    await user.click(screen.getByRole('button', { name: 'Editar “gonna”' }))
+    const d = await screen.findByRole('dialog', { name: 'Editar palavra do estudo' })
+    expect(within(d).getByLabelText(/Palavra ou expressão/)).toHaveAttribute('readonly')
+    await user.type(within(d).getByLabelText(/Significado/), 'vou')
+    await user.click(within(d).getByRole('button', { name: 'Salvar' }))
+    expect(await screen.findByText('Palavra atualizada no estudo; adicionada ao vocabulário.')).toBeInTheDocument()
+    expect(fake.vocabulary.map((v) => v.word)).toEqual(['love', 'heart', 'gonna'])
+    expect(screen.queryByRole('button', { name: 'Sincronizar com o vocabulário' })).not.toBeInTheDocument()
+
+    // idempotente: rodar de novo não cria nada
+    expect(await fake.service.syncWords()).toEqual({ created: 0, linked: 0, pending: 0 })
+
+    // editar uma já vinculada não altera o vocabulário
+    await user.click(screen.getByRole('button', { name: 'Editar “heart”' }))
+    const e = await screen.findByRole('dialog', { name: 'Editar palavra do estudo' })
+    await user.clear(within(e).getByLabelText(/Significado/))
+    await user.type(within(e).getByLabelText(/Significado/), 'coração (órgão)')
+    await user.click(within(e).getByRole('button', { name: 'Salvar' }))
+    expect(await screen.findByText('Palavra atualizada no estudo; o vocabulário não foi alterado.')).toBeInTheDocument()
+    expect(fake.vocabulary[1].translation).toBe('coração')
+
+    // excluir do estudo: o vocabulário continua
+    await user.click(screen.getByRole('button', { name: 'Excluir “heart” deste estudo' }))
+    const c = await screen.findByRole('dialog', { name: 'Excluir palavra do estudo?' })
+    expect(within(c).getByText(/A palavra continua no seu vocabulário/)).toBeInTheDocument()
+    await user.click(within(c).getByRole('button', { name: /Excluir/ }))
+    await screen.findByText('Palavra excluída do estudo.')
+    expect(fake.vocabulary.map((v) => v.word)).toEqual(['love', 'heart', 'gonna'])
   })
 
   it('lista: em andamento primeiro com Continuar; histórico só com concluídos; concluir/reabrir', async () => {

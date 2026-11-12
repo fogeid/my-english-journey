@@ -136,50 +136,33 @@ describe('music-service real: atividades, compreensão e vocabulário sem duplic
     await svc.saveActivity(C.id, id, 'vocabulary', { my_answers: 'b', difficulties: 'd', corrections: null, explanations: null, notes: null }) // upsert
     await svc.setComprehension(id, 'initial', { score: 4, comment: 'pouco' })
     await svc.setComprehension(id, 'final', { score: 7.5, comment: null })
-    await svc.addWord(C.id, id, { term: 'count on', meaning: 'contar com', excerpt: null })
-    await svc.addWord(C.id, id, { term: '100%_sure', meaning: null, excerpt: null })
-    await expect(svc.addWord(C.id, id, { term: 'Count On', meaning: null, excerpt: null })).rejects.toMatchObject({ userMessage: MUSIC_MESSAGES.duplicateWord })
+    expect(await svc.addWord(id, { term: 'count on', meaning: 'contar com', excerpt: 'You can count on me' })).toBe('created')
+    expect(await svc.addWord(id, { term: '100%_sure', meaning: 'certeza', excerpt: null })).toBe('created')
+    await expect(svc.addWord(id, { term: 'Count On', meaning: 'x', excerpt: null })).rejects.toMatchObject({ userMessage: MUSIC_MESSAGES.duplicateWord })
     await expect(svc.create(C.id, { study_number: 1, song: 'x', artist: 'y', studied_on: '2026-11-10', level: 'A1', report: null })).rejects.toMatchObject({ userMessage: MUSIC_MESSAGES.duplicateNumber })
 
     let s = (await svc.get(id))!
     expect(s.music_activities).toHaveLength(1)
     expect(s.music_activities[0]).toMatchObject({ my_answers: 'b', difficulties: 'd' })
     expect([Number(s.initial_score), Number(s.final_score), s.initial_comprehension]).toEqual([4, 7.5, 'pouco'])
-    const [w1, w2] = s.music_words
-
-    // nova no vocabulário: cria com origem = este estudo e vincula
-    expect(await svc.findVocabulary('count on')).toBeNull()
-    await svc.addToVocabulary(C.id, w1.id, { word: 'count on', translation: 'contar com', example_1: 'You can count on me.', example_2: 'Count on it.', part_of_speech: 'phrase', notes: null, source_type: 'music', source_ref: id })
-    // busca exata sem diferenciar maiúsculas; %, _ não são curingas
-    expect(await svc.findVocabulary('  COUNT ON ')).toMatchObject({ word: 'count on' })
-    expect(await svc.findVocabulary('count%')).toBeNull()
-    expect(await svc.findVocabulary('100%_sure')).toBeNull()
-    // duplicata: segunda tentativa de criar a mesma palavra é recusada pela unicidade da ET-003
-    await expect(
-      svc.addToVocabulary(C.id, w2.id, { word: 'Count On', translation: 'x', example_1: 'e', example_2: 'e', part_of_speech: null, notes: null, source_type: 'manual', source_ref: null }),
-    ).rejects.toMatchObject({ userMessage: MUSIC_MESSAGES.vocabularyDuplicate })
-    const vocab = must(await C.client.from('vocabulary').select('id, word, source_type, source_ref'))
-    expect(vocab).toHaveLength(1)
-    expect(vocab[0]).toMatchObject({ source_type: 'music', source_ref: id })
-    // vincular a uma existente
-    await svc.linkWord(w2.id, vocab[0].id)
-    s = (await svc.get(id))!
-    expect(s.music_words.map((w) => w.vocabulary_id)).toEqual([vocab[0].id, vocab[0].id])
+    // ET-008: as duas palavras entraram no vocabulário (origem = este estudo), sem duplicar
+    const vocab = must(await C.client.from('vocabulary').select('id, word, source_type, source_ref').order('word'))
+    expect(vocab.map((v) => v.word)).toEqual(['100%_sure', 'count on'])
+    expect(vocab.every((v) => v.source_type === 'music' && v.source_ref === id)).toBe(true)
+    expect(s.music_words.every((w) => w.vocabulary_id !== null)).toBe(true)
 
     // excluir o estudo: atividades e palavras do estudo somem; a palavra do vocabulário fica (origem → nula)
     await svc.remove(id)
     expect(must(await admin.from('music_activities').select('id').eq('music_study_id', id))).toEqual([])
     expect(must(await admin.from('music_words').select('id').eq('music_study_id', id))).toEqual([])
-    expect(must(await C.client.from('vocabulary').select('source_ref').eq('id', vocab[0].id).single()).source_ref).toBeNull()
+    expect(must(await C.client.from('vocabulary').select('source_ref').in('id', vocab.map((v) => v.id))).map((v) => v.source_ref)).toEqual([null, null])
   })
 
   it('excluir a palavra do vocabulário só anula o vínculo na palavra do estudo', async () => {
     const D = await createAccount('d')
     const svc = createSupabaseMusicService(D.client)
     const id = await svc.create(D.id, { study_number: 1, song: 's', artist: 'a', studied_on: '2026-11-10', level: 'A1', report: null })
-    await svc.addWord(D.id, id, { term: 'hello', meaning: null, excerpt: null })
-    const w = (await svc.get(id))!.music_words[0]
-    await svc.addToVocabulary(D.id, w.id, { word: 'hello', translation: 'olá', example_1: 'e', example_2: 'e', part_of_speech: null, notes: null, source_type: 'manual', source_ref: null })
+    await svc.addWord(id, { term: 'hello', meaning: 'olá', excerpt: null })
     const vid = (await svc.get(id))!.music_words[0].vocabulary_id!
     expect(must(await D.client.from('vocabulary').delete().eq('id', vid).select())).toHaveLength(1)
     expect((await svc.get(id))!.music_words[0]).toMatchObject({ term: 'hello', vocabulary_id: null })

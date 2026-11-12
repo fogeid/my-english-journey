@@ -44,6 +44,16 @@ describe('/reviews', () => {
     expect(within(card).getByRole('button', { name: /Fácil.*3 dias/ })).toBeInTheDocument()
   })
 
+  it('ET-008: cartão sem exemplos mostra só a tradução (nada inventado)', async () => {
+    const { user } = setup([{ word: 'heart', translation: 'coração', example_1: null, example_2: null }])
+    await user.click(await screen.findByRole('button', { name: 'Mostrar resposta' }))
+    const card = screen.getByRole('article')
+    expect(within(card).getByText('coração')).toBeInTheDocument()
+    expect(within(card).queryByRole('list', { name: 'Exemplos' })).not.toBeInTheDocument()
+    expect(within(card).queryByText(/null|•/)).not.toBeInTheDocument()
+    expect(within(card).getByRole('button', { name: /Bom/ })).toBeInTheDocument()
+  })
+
   it('avaliar salva, avança para o próximo cartão e conta a sessão', async () => {
     const { fake, user } = setup(WORDS)
     await user.click(await screen.findByRole('button', { name: 'Mostrar resposta' }))

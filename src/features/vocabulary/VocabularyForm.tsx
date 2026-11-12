@@ -84,14 +84,14 @@ export function VocabularyForm({
         </div>
         <div>
           <label htmlFor={id('example1')} className={field.label}>
-            Exemplo 1 (inglês)
+            Exemplo 1 (inglês) <span className="font-normal text-slate-500">(opcional)</span>
           </label>
           <textarea {...a11y('example1')} lang="en" rows={2} className={field.input} value={input.example1} onChange={(e) => set('example1', e.target.value)} />
           {error('example1')}
         </div>
         <div>
           <label htmlFor={id('example2')} className={field.label}>
-            Exemplo 2 (inglês)
+            Exemplo 2 (inglês) <span className="font-normal text-slate-500">(opcional)</span>
           </label>
           <textarea {...a11y('example2')} lang="en" rows={2} className={field.input} value={input.example2} onChange={(e) => set('example2', e.target.value)} />
           {error('example2')}

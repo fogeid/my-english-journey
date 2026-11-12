@@ -39,9 +39,11 @@ describe('Validações', () => {
     expect(validateActivity({ ...empty, difficulties: ' ritmo rápido ' }).values).toEqual({ ...Object.fromEntries(Object.keys(empty).map((k) => [k, null])), difficulties: 'ritmo rápido' })
     expect(validateActivity({ ...empty, notes: 'x'.repeat(2001) }).error).toMatch(/2000/)
   })
-  it('palavra do estudo: termo obrigatório; trecho curto até 300', () => {
+  it('palavra do estudo: termo e significado obrigatórios; trecho curto até 300', () => {
     expect(validateWord({ term: ' count on ', meaning: 'contar com', excerpt: '' }).values).toEqual({ term: 'count on', meaning: 'contar com', excerpt: null })
     expect(validateWord({ term: '', meaning: '', excerpt: '' }).errors.term).toBeTruthy()
     expect(validateWord({ term: 'x', meaning: '', excerpt: 'x'.repeat(301) }).errors.excerpt).toMatch(/300/)
+    expect(validateWord({ term: 'x', meaning: '   ', excerpt: '' }).errors.meaning).toBe('Informe o significado.')
+    expect(validateWord({ term: 'x', meaning: 'x'.repeat(241), excerpt: '' }).errors.meaning).toMatch(/240/)
   })
 })

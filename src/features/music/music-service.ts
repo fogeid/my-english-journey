@@ -1,5 +1,4 @@
 import type { DbClient } from '../../lib/supabase-context'
-import type { VocabularyValues } from '../vocabulary/vocabulary-model'
 import type { ActivityType, ActivityValues, MusicStudyDetail, MusicStudySummary, StudyValues, WordValues } from './music-model'
 
 export class MusicError extends Error {
@@ -18,8 +17,17 @@ export const MUSIC_MESSAGES = {
   save: 'Não foi possível salvar. Verifique sua conexão e tente novamente.',
   duplicateNumber: 'Já existe um estudo com este número.',
   duplicateWord: 'Esta palavra já foi registrada neste estudo.',
-  vocabularyDuplicate: 'Esta palavra já está no seu vocabulário.',
+  meaningRequired: 'Informe o significado.',
+  sync: 'Não foi possível sincronizar com o vocabulário. Nada foi alterado; tente novamente.',
 } as const
+
+/** Resultado da sincronização de uma palavra do estudo com o vocabulário (ET-008). */
+export type WordSyncResult = 'created' | 'linked' | 'pending' | 'already'
+export interface SyncSummary {
+  created: number
+  linked: number
+  pending: number
+}
 
 interface PgError {
   code?: string
@@ -29,15 +37,17 @@ function toError(error: PgError | null | undefined, fallback: string): MusicErro
   const m = error?.message ?? ''
   if (error?.code === '23505' && /music_studies_user_number_key/.test(m)) return new MusicError(MUSIC_MESSAGES.duplicateNumber, error)
   if (error?.code === '23505' && /music_words_study_term_key/.test(m)) return new MusicError(MUSIC_MESSAGES.duplicateWord, error)
-  if (error?.code === '23505' && /vocabulary_user/.test(m)) return new MusicError(MUSIC_MESSAGES.vocabularyDuplicate, error)
+  if (error?.code === '22023' && /meaning required/.test(m)) return new MusicError(MUSIC_MESSAGES.meaningRequired, error)
   return new MusicError(fallback, error)
 }
 function one(res: { data: unknown[] | null; error: PgError | null }, fallback: string) {
   if (res.error || !res.data || res.data.length !== 1) throw toError(res.error, fallback)
 }
-
-/** ILIKE sem curingas = comparação exata sem diferenciar maiúsculas (mesma regra da unicidade da ET-003). */
-const exactPattern = (s: string) => s.trim().replace(/\\/g, '\\\\').replace(/%/g, '\\%').replace(/_/g, '\\_')
+const SYNC_RESULTS: readonly string[] = ['created', 'linked', 'pending', 'already']
+function syncResult(res: { data: string | null; error: PgError | null }): WordSyncResult {
+  if (res.error || !res.data || !SYNC_RESULTS.includes(res.data)) throw toError(res.error, MUSIC_MESSAGES.save)
+  return res.data as WordSyncResult
+}
 
 export interface MusicService {
   list(): Promise<MusicStudySummary[]>
@@ -49,17 +59,18 @@ export interface MusicService {
   remove(id: string): Promise<void>
   /** Cria ou atualiza a atividade do tipo (no máximo uma por tipo e estudo). */
   saveActivity(userId: string, studyId: string, type: ActivityType, values: ActivityValues): Promise<void>
-  addWord(userId: string, studyId: string, values: WordValues): Promise<void>
+  /** Grava a palavra no estudo e sincroniza com o vocabulário na mesma transação (tudo ou nada). */
+  addWord(studyId: string, values: WordValues): Promise<WordSyncResult>
+  /** Corrige significado/trecho; se a palavra ainda não estiver no vocabulário, sincroniza. */
+  updateWord(wordId: string, values: Pick<WordValues, 'meaning' | 'excerpt'>): Promise<WordSyncResult>
+  /** Exclui só do estudo; o vocabulário é preservado. */
   removeWord(id: string): Promise<void>
-  /** Palavra já existente no vocabulário (mesma regra de duplicata da ET-003), se houver. */
-  findVocabulary(term: string): Promise<{ id: string; word: string } | null>
-  linkWord(wordId: string, vocabularyId: string): Promise<void>
-  /** Cria a palavra no vocabulário (origem = este estudo) e vincula. Nunca duplica. */
-  addToVocabulary(userId: string, wordId: string, values: VocabularyValues): Promise<void>
+  /** Sincroniza as palavras de estudos anteriores ainda fora do vocabulário (idempotente). */
+  syncWords(): Promise<SyncSummary>
 }
 
 export function createSupabaseMusicService(client: DbClient): MusicService {
-  const svc: MusicService = {
+  return {
     async list() {
       const { data, error } = await client
         .from('music_studies')
@@ -100,26 +111,21 @@ export function createSupabaseMusicService(client: DbClient): MusicService {
         .upsert({ user_id: userId, music_study_id: studyId, activity_type: type, ...values, updated_at: new Date().toISOString() }, { onConflict: 'music_study_id,activity_type' })
       if (error) throw toError(error, MUSIC_MESSAGES.save)
     },
-    async addWord(userId, studyId, values) {
-      const { error } = await client.from('music_words').insert({ user_id: userId, music_study_id: studyId, ...values })
-      if (error) throw toError(error, MUSIC_MESSAGES.save)
+    async addWord(studyId, values) {
+      return syncResult(
+        await client.rpc('add_music_word', { p_study_id: studyId, p_term: values.term, p_meaning: values.meaning, ...(values.excerpt ? { p_excerpt: values.excerpt } : {}) }),
+      )
+    },
+    async updateWord(wordId, values) {
+      return syncResult(await client.rpc('update_music_word', { p_word_id: wordId, p_meaning: values.meaning, ...(values.excerpt ? { p_excerpt: values.excerpt } : {}) }))
     },
     async removeWord(id) {
       one(await client.from('music_words').delete().eq('id', id).select('id'), MUSIC_MESSAGES.save)
     },
-    async findVocabulary(term) {
-      const { data, error } = await client.from('vocabulary').select('id, word').ilike('word', exactPattern(term)).limit(1)
-      if (error) throw toError(error, MUSIC_MESSAGES.load)
-      return data[0] ?? null
-    },
-    async linkWord(wordId, vocabularyId) {
-      one(await client.from('music_words').update({ vocabulary_id: vocabularyId }).eq('id', wordId).select('id'), MUSIC_MESSAGES.save)
-    },
-    async addToVocabulary(userId, wordId, values) {
-      const { data, error } = await client.from('vocabulary').insert({ user_id: userId, ...values }).select('id').single()
-      if (error || !data) throw toError(error, MUSIC_MESSAGES.save)
-      await svc.linkWord(wordId, data.id)
+    async syncWords() {
+      const { data, error } = await client.rpc('sync_music_words')
+      if (error || !data || data.length !== 1) throw toError(error, MUSIC_MESSAGES.sync)
+      return data[0]
     },
   }
-  return svc
 }

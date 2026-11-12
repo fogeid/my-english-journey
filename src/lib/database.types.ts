@@ -331,14 +331,14 @@ isOneToOne: false
                   ]
                 },"vocabulary": {
                   Row: {
-                    "created_at": string,"example_1": string,"example_1_translation": string | null,"example_2": string,"example_2_translation": string | null,"id": string,"next_review_at": string | null,"notes": string | null,"part_of_speech": string | null,"review_count": number,"review_interval_days": number,"review_streak": number,"source_ref": string | null,"source_type": string | null,"translation": string,"user_id": string,"word": string
+                    "created_at": string,"example_1": string | null,"example_1_translation": string | null,"example_2": string | null,"example_2_translation": string | null,"id": string,"next_review_at": string | null,"notes": string | null,"part_of_speech": string | null,"review_count": number,"review_interval_days": number,"review_streak": number,"source_ref": string | null,"source_type": string | null,"translation": string,"user_id": string,"word": string
                   }
                   ComputedFields: never
                   Insert: {
-                    "created_at"?: string,"example_1": string,"example_1_translation"?: string | null,"example_2": string,"example_2_translation"?: string | null,"id"?: string,"next_review_at"?: string | null,"notes"?: string | null,"part_of_speech"?: string | null,"review_count"?: number,"review_interval_days"?: number,"review_streak"?: number,"source_ref"?: string | null,"source_type"?: string | null,"translation": string,"user_id": string,"word": string
+                    "created_at"?: string,"example_1"?: string | null,"example_1_translation"?: string | null,"example_2"?: string | null,"example_2_translation"?: string | null,"id"?: string,"next_review_at"?: string | null,"notes"?: string | null,"part_of_speech"?: string | null,"review_count"?: number,"review_interval_days"?: number,"review_streak"?: number,"source_ref"?: string | null,"source_type"?: string | null,"translation": string,"user_id": string,"word": string
                   }
                   Update: {
-                    "created_at"?: string,"example_1"?: string,"example_1_translation"?: string | null,"example_2"?: string,"example_2_translation"?: string | null,"id"?: string,"next_review_at"?: string | null,"notes"?: string | null,"part_of_speech"?: string | null,"review_count"?: number,"review_interval_days"?: number,"review_streak"?: number,"source_ref"?: string | null,"source_type"?: string | null,"translation"?: string,"user_id"?: string,"word"?: string
+                    "created_at"?: string,"example_1"?: string | null,"example_1_translation"?: string | null,"example_2"?: string | null,"example_2_translation"?: string | null,"id"?: string,"next_review_at"?: string | null,"notes"?: string | null,"part_of_speech"?: string | null,"review_count"?: number,"review_interval_days"?: number,"review_streak"?: number,"source_ref"?: string | null,"source_type"?: string | null,"translation"?: string,"user_id"?: string,"word"?: string
                   }
                   Relationships: [
                     {
@@ -387,7 +387,10 @@ isOneToOne: false
             [_ in never]: never
           }
           Functions: {
-            "complete_activity":
+            "add_music_word":
+{ Args: { "p_excerpt"?: string,"p_meaning": string,"p_study_id": string,"p_term": string }; Returns: string
+                           },
+"complete_activity":
 { Args: { "p_activity_id": string,"p_actual_minutes": number }; Returns: {
               "activity_id": string | null,
 "actual_minutes": number,
@@ -438,9 +441,9 @@ isOneToOne: false
 "get_review_queue":
 { Args: { "p_limit"?: number }; Returns: {
               "created_at": string,
-"example_1": string,
+"example_1": string | null,
 "example_1_translation": string | null,
-"example_2": string,
+"example_2": string | null,
 "example_2_translation": string | null,
 "id": string,
 "next_review_at": string | null,
@@ -539,6 +542,17 @@ isOneToOne: false
                            },
 "set_subactivity_completed":
 { Args: { "p_actual_minutes"?: number,"p_completed": boolean,"p_subactivity_id": string }; Returns: Json
+                           },
+"sync_music_word":
+{ Args: { "p_word_id": string }; Returns: string
+                           },
+"sync_music_words":
+{ Args: Record<PropertyKey, never>; Returns: {
+              "created": number,"linked": number,"pending": number
+            }[]
+                           },
+"update_music_word":
+{ Args: { "p_excerpt"?: string,"p_meaning": string,"p_word_id": string }; Returns: string
                            }
           }
           Enums: {

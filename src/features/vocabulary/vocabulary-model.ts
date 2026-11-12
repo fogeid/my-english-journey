@@ -6,7 +6,7 @@ type Nullable<T, K extends keyof T> = Omit<T, K> & { [P in K]: T[P] | null }
 /** O gerador de tipos marca colunas de RETURNS TABLE como não nulas; estas podem ser null. */
 export type VocabularyRow = Nullable<
   Fns['list_vocabulary']['Returns'][number],
-  'part_of_speech' | 'notes' | 'source_type' | 'source_ref' | 'next_review_at'
+  'part_of_speech' | 'notes' | 'source_type' | 'source_ref' | 'next_review_at' | 'example_1' | 'example_2'
 >
 export type QueueCard = Fns['get_review_queue']['Returns'][number]
 export type VocabularySummary = Omit<Fns['get_vocabulary_summary']['Returns'][number], 'server_now'> & {
@@ -48,8 +48,8 @@ export interface VocabularyInput {
 export interface VocabularyValues {
   word: string
   translation: string
-  example_1: string
-  example_2: string
+  example_1: string | null
+  example_2: string | null
   part_of_speech: string | null
   notes: string | null
   source_type: 'manual' | 'lesson' | 'music'
@@ -86,8 +86,9 @@ export function validateVocabulary(input: VocabularyInput): { values: Vocabulary
   const e = {
     word: required(word, LIMITS.word, 'a palavra ou expressão'),
     translation: required(translation, LIMITS.translation, 'a tradução'),
-    example1: required(example1, LIMITS.example, 'o exemplo 1'),
-    example2: required(example2, LIMITS.example, 'o exemplo 2'),
+    // Exemplos são opcionais (ET-008); vazio = sem exemplo.
+    example1: example1.length > LIMITS.example ? `Use no máximo ${LIMITS.example} caracteres.` : undefined,
+    example2: example2.length > LIMITS.example ? `Use no máximo ${LIMITS.example} caracteres.` : undefined,
     notes: notes.length > LIMITS.notes ? `Use no máximo ${LIMITS.notes} caracteres.` : undefined,
     partOfSpeech:
       input.partOfSpeech && !PART_OF_SPEECH.some((p) => p.value === input.partOfSpeech) ? 'Categoria inválida.' : undefined,
@@ -101,8 +102,8 @@ export function validateVocabulary(input: VocabularyInput): { values: Vocabulary
     values: {
       word,
       translation,
-      example_1: example1,
-      example_2: example2,
+      example_1: example1 || null,
+      example_2: example2 || null,
       part_of_speech: input.partOfSpeech || null,
       notes: notes || null,
       source_type: type,
@@ -116,8 +117,8 @@ export function inputFromRow(row: VocabularyRow): VocabularyInput {
   return {
     word: row.word,
     translation: row.translation,
-    example1: row.example_1,
-    example2: row.example_2,
+    example1: row.example_1 ?? '',
+    example2: row.example_2 ?? '',
     partOfSpeech: row.part_of_speech ?? '',
     notes: row.notes ?? '',
     source: row.source_type && row.source_type !== 'manual' && row.source_ref ? `${row.source_type}:${row.source_ref}` : '',

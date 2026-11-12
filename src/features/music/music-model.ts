@@ -131,7 +131,7 @@ export interface WordInput {
 }
 export interface WordValues {
   term: string
-  meaning: string | null
+  meaning: string
   excerpt: string | null
 }
 export type WordErrors = Partial<Record<keyof WordInput, string>>
@@ -143,8 +143,9 @@ export function validateWord(input: WordInput): { values: WordValues | null; err
   const excerpt = input.excerpt.trim()
   if (!term) errors.term = 'Informe a palavra ou expressão.'
   else if (term.length > MUSIC_LIMITS.term) errors.term = `Use no máximo ${MUSIC_LIMITS.term} caracteres.`
-  if (meaning.length > MUSIC_LIMITS.meaning) errors.meaning = `Use no máximo ${MUSIC_LIMITS.meaning} caracteres.`
+  if (!meaning) errors.meaning = 'Informe o significado.'
+  else if (meaning.length > MUSIC_LIMITS.meaning) errors.meaning = `Use no máximo ${MUSIC_LIMITS.meaning} caracteres.`
   if (excerpt.length > MUSIC_LIMITS.excerpt) errors.excerpt = `Trecho curto: no máximo ${MUSIC_LIMITS.excerpt} caracteres.`
   if (Object.keys(errors).length) return { values: null, errors }
-  return { values: { term, meaning: meaning || null, excerpt: excerpt || null }, errors }
+  return { values: { term, meaning, excerpt: excerpt || null }, errors }
 }

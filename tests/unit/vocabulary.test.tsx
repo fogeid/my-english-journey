@@ -35,7 +35,8 @@ describe('/vocabulary', () => {
 
     await user.click(within(dialog).getByRole('button', { name: 'Salvar' }))
     expect(within(dialog).getByText('Informe a palavra ou expressão.')).toBeInTheDocument()
-    expect(within(dialog).getByText('Informe o exemplo 2.')).toBeInTheDocument()
+    expect(within(dialog).getByText('Informe a tradução.')).toBeInTheDocument()
+    expect(within(dialog).queryByText(/Informe o exemplo/)).not.toBeInTheDocument() // exemplos opcionais (ET-008)
     expect(fake.calls.create).toBeUndefined()
 
     await fillForm(user, dialog, { word: '  tired ', translation: 'cansado', e1: 'I am tired.', e2: 'You look tired.' })

@@ -1,6 +1,6 @@
 import { useEffect, useId, useState, type FormEvent, type ReactNode } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
-import { ArrowLeft, BookPlus, CheckCircle2, Link2, Pencil, Plus, RotateCcw, Trash2 } from 'lucide-react'
+import { ArrowLeft, CheckCircle2, CircleAlert, Pencil, Plus, RefreshCw, RotateCcw, Trash2 } from 'lucide-react'
 import { ConfirmDialog } from '../../components/ui/ConfirmDialog'
 import { ErrorState } from '../../components/ui/ErrorState'
 import { LoadingState } from '../../components/ui/LoadingState'
@@ -9,8 +9,6 @@ import { btn, field } from '../../components/ui/styles'
 import { useAuth } from '../auth/auth-context'
 import { formatScore } from '../lessons/lesson-model'
 import { formatDate } from '../schedule/week'
-import { VocabularyForm } from '../vocabulary/VocabularyForm'
-import type { VocabularyValues } from '../vocabulary/vocabulary-model'
 import { useMusicService } from './music-context'
 import {
   ACTIVITY_FIELDS,
@@ -34,7 +32,7 @@ import {
   type WordInput,
   type WordValues,
 } from './music-model'
-import { MUSIC_MESSAGES, MusicError } from './music-service'
+import { MUSIC_MESSAGES, MusicError, type SyncSummary, type WordSyncResult } from './music-service'
 import { MusicStudyForm } from './MusicStudyForm'
 
 type Result = { key: number; status: 'ready'; study: MusicStudyDetail | null } | { key: number; status: 'error' }
@@ -44,12 +42,28 @@ type Dialog =
   | { kind: 'comprehension'; which: 'initial' | 'final' }
   | { kind: 'activity'; type: ActivityType; current: MusicActivityRow | undefined }
   | { kind: 'word' }
+  | { kind: 'editWord'; word: MusicWordRow }
   | { kind: 'deleteWord'; word: MusicWordRow }
-  | { kind: 'vocabulary'; word: MusicWordRow }
-  | { kind: 'link'; word: MusicWordRow; existing: { id: string; word: string } }
   | null
 
 const num = (v: number | null) => (v === null ? null : Number(v))
+
+const SYNC_TEXT: Record<WordSyncResult, string> = {
+  created: 'adicionada ao vocabulário',
+  linked: 'vinculada à palavra que já estava no vocabulário (nada foi sobrescrito)',
+  pending: 'ainda fora do vocabulário: falta o significado',
+  already: 'o vocabulário não foi alterado',
+}
+const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`
+function syncNotice({ created, linked, pending }: SyncSummary): string {
+  if (created + linked + pending === 0) return 'Todas as palavras dos seus estudos musicais já estão no vocabulário.'
+  const parts = [
+    plural(created, 'palavra adicionada ao vocabulário', 'palavras adicionadas ao vocabulário'),
+    plural(linked, 'vinculada a palavra existente', 'vinculadas a palavras existentes'),
+  ]
+  if (pending > 0) parts.push(`${plural(pending, 'pendente', 'pendentes')} sem significado (edite para sincronizar)`)
+  return `Sincronização concluída: ${parts.join('; ')}.`
+}
 
 function Actions({ busy, error, label, onClose }: { busy: boolean; error: string | null; label?: string; onClose: () => void }) {
   return (
@@ -144,13 +158,20 @@ function ActivityForm({ type, current, busy, serverError, onSubmit, onClose }: {
   )
 }
 
-function WordForm({ busy, serverError, onSubmit, onClose }: { busy: boolean; serverError: string | null; onSubmit: (v: WordValues) => void; onClose: () => void }) {
+function WordForm({ word, busy, serverError, onSubmit, onClose }: {
+  /** Presente = edição (a palavra em inglês não muda; só significado e trecho). */
+  word?: MusicWordRow
+  busy: boolean
+  serverError: string | null
+  onSubmit: (v: WordValues) => void
+  onClose: () => void
+}) {
   const base = useId()
-  const [input, setInput] = useState<WordInput>({ term: '', meaning: '', excerpt: '' })
+  const [input, setInput] = useState<WordInput>({ term: word?.term ?? '', meaning: word?.meaning ?? '', excerpt: word?.excerpt ?? '' })
   const [errors, setErrors] = useState<WordErrors>({})
   const fields: { key: keyof WordInput; label: string; optional?: boolean }[] = [
     { key: 'term', label: 'Palavra ou expressão (inglês)' },
-    { key: 'meaning', label: 'Significado', optional: true },
+    { key: 'meaning', label: 'Significado (português)' },
     { key: 'excerpt', label: `Trecho curto onde aparece (até ${MUSIC_LIMITS.excerpt} caracteres)`, optional: true },
   ]
   const submit = (e: FormEvent) => {
@@ -161,7 +182,12 @@ function WordForm({ busy, serverError, onSubmit, onClose }: { busy: boolean; ser
     if (values) onSubmit(values)
   }
   return (
-    <Modal title="Palavra ou expressão do estudo" onClose={onClose} closeDisabled={busy}>
+    <Modal
+      title={word ? 'Editar palavra do estudo' : 'Palavra ou expressão do estudo'}
+      description={word?.vocabulary_id ? 'A palavra já está no vocabulário; lá, nada será alterado.' : 'Ao salvar, a palavra entra automaticamente no seu vocabulário, sem duplicar.'}
+      onClose={onClose}
+      closeDisabled={busy}
+    >
       <form onSubmit={submit} noValidate className="space-y-4">
         {fields.map(({ key, label, optional }, i) => (
           <div key={key}>
@@ -170,7 +196,8 @@ function WordForm({ busy, serverError, onSubmit, onClose }: { busy: boolean; ser
             </label>
             <input
               id={`${base}-${key}`}
-              data-autofocus={i === 0 ? true : undefined}
+              data-autofocus={(word ? i === 1 : i === 0) ? true : undefined}
+              readOnly={!!word && key === 'term'}
               lang={key === 'meaning' ? undefined : 'en'}
               className={field.input}
               value={input[key]}
@@ -219,15 +246,15 @@ export function MusicDetailPage() {
     }
   }, [service, studyId, reloadKey])
 
-  const run = async (mutation: () => Promise<void>, success: string, after?: () => void) => {
+  const run = async <T,>(mutation: () => Promise<T>, success: string | ((r: T) => string), after?: () => void) => {
     if (busy) return
     setBusy(true)
     setActionError(null)
     setNotice(null)
     try {
-      await mutation()
+      const r = await mutation()
       setDialog(null)
-      setNotice(success)
+      setNotice(typeof success === 'function' ? success(r) : success)
       if (after) after()
       else setReloadKey((k) => k + 1)
     } catch (e) {
@@ -242,22 +269,6 @@ export function MusicDetailPage() {
     setDialog(d)
   }
   const close = () => !busy && setDialog(null)
-
-  /** Opção explícita: verifica duplicata no vocabulário antes de criar; se já existe, oferece vincular. */
-  const startAddToVocabulary = async (word: MusicWordRow) => {
-    if (busy) return
-    setBusy(true)
-    setActionError(null)
-    setNotice(null)
-    try {
-      const existing = await service.findVocabulary(word.term)
-      setDialog(existing ? { kind: 'link', word, existing } : { kind: 'vocabulary', word })
-    } catch (e) {
-      setActionError(e instanceof MusicError ? e.userMessage : MUSIC_MESSAGES.load)
-    } finally {
-      setBusy(false)
-    }
-  }
 
   const state = result && result.key === reloadKey ? result : null
   if (!state) return <LoadingState label="Carregando estudo…" />
@@ -274,7 +285,7 @@ export function MusicDetailPage() {
 
   const completed = study.status === 'completed'
   const delta = comprehensionDelta(num(study.initial_score), num(study.final_score))
-  const sourceOption = { value: `music:${study.id}`, label: `Música: ${study.song} — ${study.artist}` }
+  const unsynced = study.music_words.filter((w) => !w.vocabulary_id).length
 
   return (
     <section>
@@ -382,11 +393,24 @@ export function MusicDetailPage() {
       <section aria-labelledby="words-heading" className="mb-6">
         <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
           <h2 id="words-heading" className="text-lg font-semibold text-slate-900">Palavras e expressões aprendidas</h2>
-          <button type="button" className={btn.primary} onClick={() => open({ kind: 'word' })}>
-            <Plus className="size-4" aria-hidden="true" />
-            Adicionar palavra
-          </button>
+          <div className="flex flex-wrap gap-2">
+            {unsynced > 0 && (
+              <button type="button" className={btn.secondary} disabled={busy} onClick={() => void run(() => service.syncWords(), syncNotice)}>
+                <RefreshCw className="size-4" aria-hidden="true" />
+                Sincronizar com o vocabulário
+              </button>
+            )}
+            <button type="button" className={btn.primary} onClick={() => open({ kind: 'word' })}>
+              <Plus className="size-4" aria-hidden="true" />
+              Adicionar palavra
+            </button>
+          </div>
         </div>
+        {unsynced > 0 && (
+          <p className="mb-3 text-sm text-slate-600">
+            {plural(unsynced, 'palavra deste estudo ainda não está', 'palavras deste estudo ainda não estão')} no vocabulário. A sincronização inclui as palavras de todos os seus estudos musicais e nunca duplica nem altera palavras já existentes.
+          </p>
+        )}
         {study.music_words.length === 0 ? (
           <p className="rounded-lg border border-dashed border-slate-300 bg-white p-4 text-sm text-slate-600">Nenhuma palavra registrada neste estudo.</p>
         ) : (
@@ -405,11 +429,15 @@ export function MusicDetailPage() {
                       No vocabulário
                     </Link>
                   ) : (
-                    <button type="button" className={btn.ghost} disabled={busy} onClick={() => void startAddToVocabulary(w)} aria-label={`Adicionar “${w.term}” ao vocabulário`}>
-                      <BookPlus className="size-4" aria-hidden="true" />
-                      Adicionar ao vocabulário
-                    </button>
+                    <span className="inline-flex items-center gap-1 px-2 py-1.5 text-sm text-amber-800">
+                      <CircleAlert className="size-4" aria-hidden="true" />
+                      {w.meaning ? 'Fora do vocabulário' : 'Fora do vocabulário: falta o significado'}
+                    </span>
                   )}
+                  <button type="button" className={btn.ghost} onClick={() => open({ kind: 'editWord', word: w })} aria-label={`Editar “${w.term}”`}>
+                    <Pencil className="size-4" aria-hidden="true" />
+                    Editar
+                  </button>
                   <button type="button" className={`${btn.ghost} text-red-700 hover:bg-red-50`} onClick={() => open({ kind: 'deleteWord', word: w })} aria-label={`Excluir “${w.term}” deste estudo`}>
                     <Trash2 className="size-4" aria-hidden="true" />
                     Excluir
@@ -454,8 +482,17 @@ export function MusicDetailPage() {
       {dialog?.kind === 'activity' && user && (
         <ActivityForm type={dialog.type} current={dialog.current} busy={busy} serverError={actionError} onSubmit={(v) => void run(() => service.saveActivity(user.id, study.id, dialog.type, v), 'Atividade salva.')} onClose={close} />
       )}
-      {dialog?.kind === 'word' && user && (
-        <WordForm busy={busy} serverError={actionError} onSubmit={(v) => void run(() => service.addWord(user.id, study.id, v), 'Palavra registrada no estudo.')} onClose={close} />
+      {dialog?.kind === 'word' && (
+        <WordForm busy={busy} serverError={actionError} onSubmit={(v) => void run(() => service.addWord(study.id, v), (r) => `Palavra registrada no estudo e ${SYNC_TEXT[r]}.`)} onClose={close} />
+      )}
+      {dialog?.kind === 'editWord' && (
+        <WordForm
+          word={dialog.word}
+          busy={busy}
+          serverError={actionError}
+          onSubmit={(v) => void run(() => service.updateWord(dialog.word.id, v), (r) => `Palavra atualizada no estudo; ${SYNC_TEXT[r]}.`)}
+          onClose={close}
+        />
       )}
       {dialog?.kind === 'deleteWord' && (
         <ConfirmDialog
@@ -466,29 +503,6 @@ export function MusicDetailPage() {
           onConfirm={() => void run(() => service.removeWord(dialog.word.id), 'Palavra excluída do estudo.')}
           onClose={close}
         />
-      )}
-      {dialog?.kind === 'vocabulary' && user && (
-        <VocabularyForm
-          editing={false}
-          initial={{ word: dialog.word.term, translation: dialog.word.meaning ?? '', example1: dialog.word.excerpt ?? '', example2: '', partOfSpeech: '', notes: '', source: sourceOption.value }}
-          sources={[sourceOption]}
-          busy={busy}
-          serverError={actionError}
-          onSubmit={(v: VocabularyValues) => void run(() => service.addToVocabulary(user.id, dialog.word.id, v), `“${v.word}” adicionada ao vocabulário.`)}
-          onClose={close}
-        />
-      )}
-      {dialog?.kind === 'link' && (
-        <Modal title="Palavra já está no vocabulário" description={`“${dialog.existing.word}” já existe no seu vocabulário. Nada será duplicado.`} onClose={close} closeDisabled={busy}>
-          {actionError && <p role="alert" className="mb-4 rounded-md bg-red-50 px-3 py-2 text-sm text-red-800">{actionError}</p>}
-          <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
-            <button type="button" className={btn.secondary} onClick={close} disabled={busy} data-autofocus>Cancelar</button>
-            <button type="button" className={btn.primary} disabled={busy} onClick={() => void run(() => service.linkWord(dialog.word.id, dialog.existing.id), 'Palavra vinculada ao vocabulário existente.')}>
-              <Link2 className="size-4" aria-hidden="true" />
-              Vincular à existente
-            </button>
-          </div>
-        </Modal>
       )}
     </section>
   )
